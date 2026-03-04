@@ -19,6 +19,17 @@ OFPT_FEATURES_REPLY = 6
 # H = uint16_t (2 bytes) -> length
 # I = uint32_t (4 bytes) -> xid
 
+# OpenFlow 1.3 Features Reply Body Format: !QIBB2xII
+# ! = Network Byte Order (Big-Endian)
+# Q = uint64_t (8 bytes) -> datapath_id
+# I = uint32_t (4 bytes) -> n_buffers
+# B = uint8_t  (1 byte)  -> n_tables
+# B = uint8_t  (1 byte)  -> auxiliary_id
+# 2x = pad     (2 bytes) -> (ignored/padding)
+# I = uint32_t (4 bytes) -> capabilities
+# I = uint32_t (4 bytes) -> reserved
+# Total Body = 24 bytes (Header 8 + Body 24 = 32 bytes total)
+
 
 switches = {}  #store per-switch state
 
@@ -81,7 +92,17 @@ def handle_switch(connection, address):
                 print(f"Sent ECHO_REPLY for XID {xid}")
 
             elif msg_type == OFPT_FEATURES_REPLY:
-                print("Received FEATURES_REPLY --- Handshake Completed!!!")
+                # print("Received FEATURES_REPLY --- Handshake Completed!!!")
+
+                #unpack first 8 bytes as 64-bit unsigned int DPID
+                dpid = struct.unpack('!Q', body_data[:8])[0]
+
+                #convert it to hex string 00:00:00:00
+                dpid_hex = f"{dpid:016x}"
+                formatted_dpid = ":".join(dpid_hex[i:i+2] for i in range(0,16,2))
+
+                switches[formatted_dpid] = connection
+                print(f"Handshake Complete! Registered Switch DPID: {formatted_dpid}")
 
 
         except Exception as e:
