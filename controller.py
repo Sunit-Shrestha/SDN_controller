@@ -2,6 +2,23 @@ import socket
 import _thread
 import struct
 
+#constants from the openflow specs
+OF_VERSION_1_3 = 0x04
+OFPT_HELLO = 0
+OFPT_ERROR = 1
+OFPT_ECHO_REQUEST = 2
+OFPT_ECHO_REPLY = 3
+OFPT_EXPERIMENTER = 4
+OFPT_FEATURES_REQUEST = 5
+
+# OpenFlow 1.3 Header Format: !BBHI
+# ! = Network Byte Order (Big-Endian)
+# B = uint8_t (1 byte)  -> version
+# B = uint8_t (1 byte)  -> type
+# H = uint16_t (2 bytes) -> length
+# I = uint32_t (4 bytes) -> xid
+
+
 switches = {}  #store per-switch state
 
 def handle_switch(connection, address):
@@ -18,6 +35,17 @@ def handle_switch(connection, address):
             print(f"Received {len(data)} bytes from {address}:{data.hex()}")
 
             #todo: parse openflow message
+            version, msg_type , msg_len, xid = struct.unpack('!BBHI', data)
+
+            if msg_type == OFPT_HELLO:
+                print("Received HELLO")
+                #send hello back
+                connection.sendall(struct.pack('!BBHI',OF_VERSION_1_3,OFPT_HELLO,8, xid))
+
+                #immediately ask for Features
+                connection.sendall(struct.pack('!BBHI', OF_VERSION_1_3, OFPT_FEATURES_REQUEST, 8, xid+1))
+                print('Feature Request Sent')
+
 
         except Exception as e:
             print(f"Error with {address}:{e}")
