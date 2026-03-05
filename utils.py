@@ -1,6 +1,10 @@
 from ofproto.header import OFPHeader
 from ofproto.switch_features import OFPSwitchFeaturesBody
-from ofproto.constants import OF_VERSION_1_3, OFPT
+import ofproto.constants as ofc
+from ofproto.match import OFPMatch
+from ofproto.action_out import OFPActionOut, OFPInstructionActions
+from ofproto.packet_out import OFPPacketOut
+from ofproto.flow_mod import OFPFlowMod
 import struct
 
 
@@ -41,15 +45,15 @@ def extract_body(connection,message_length:int):
     return body_data
 
 def send_hello(connection,xid:int):
-    header = OFPHeader(OF_VERSION_1_3, OFPT.HELLO,OFPHeader.STRUCT_SIZE, xid)
+    header = OFPHeader(ofc.OF_VERSION_1_3, ofc.OFPT.HELLO,OFPHeader.STRUCT_SIZE, xid)
     connection.sendall(header.pack())
 
 def send_feature_request(connection, xid:int):
-    header = OFPHeader(OF_VERSION_1_3, OFPT.FEATURES_REQUEST, OFPHeader.STRUCT_SIZE,xid)
+    header = OFPHeader(ofc.OF_VERSION_1_3, ofc.OFPT.FEATURES_REQUEST, OFPHeader.STRUCT_SIZE,xid)
     connection.sendall(header.pack())
 
 def send_echo_reply(connection, xid:int):
-    header = OFPHeader(OF_VERSION_1_3, OFPT.ECHO_REPLY, OFPHeader.STRUCT_SIZE, xid)
+    header = OFPHeader(ofc.OF_VERSION_1_3, ofc.OFPT.ECHO_REPLY, OFPHeader.STRUCT_SIZE, xid)
     connection.sendall(header.pack())
 
 def unpack_dpid(body_data:bytes):
@@ -85,3 +89,120 @@ def extract_in_port(oxm_field,oxm_end):
 
     return None
 
+
+def send_table_miss_flow(connection):
+    # This programs the switch to send unmatched packets to the controller
+
+    message_length = 8 + 48 + 8 + 16
+
+    header_to_send = OFPHeader(
+        version=ofc.OF_VERSION_1_3,
+        message_type=ofc.OFPT.FLOW_MOD,
+        message_length=message_length,
+        xid=1,
+    )
+    header_data = header_to_send.pack()
+
+    match_to_send = OFPMatch(type=ofc.OFPMT.OXM, length=4, oxm_field=b'')
+
+    flow_mod_to_send = OFPFlowMod(
+        cookie=0,
+        cookie_mask=0,
+        table_id=0,
+        command=0,
+        idle_timeout=0,
+        hard_timeout=0,
+        priority=0,
+        buffer_id=ofc.OFP.NO_BUFFER,
+        out_port=ofc.OFPP.ANY,
+        out_group=ofc.OFPG.ANY,
+        flags=0,
+        match=match_to_send
+    )
+    flow_mod_data = flow_mod_to_send.pack()
+
+    inst_to_send = OFPInstructionActions(type=ofc.OFPIT.APPLY_ACTIONS, len=24)
+    inst_data = inst_to_send.pack()
+    action_to_send = OFPActionOut(type=ofc.OFPAT.OUTPUT, len=16, port=ofc.OFPP.CONTROLLER, max_len=0xffff)
+    action_data = action_to_send.pack()
+
+    connection.sendall(header_data+ flow_mod_data + inst_data + action_data)
+
+
+def install_mac_flow(connection, dst_mac, out_port, xid):
+    oxm_field = struct.pack("!HBB6s", 0x8000, 3 << 1, 6, dst_mac)
+    match_to_send = OFPMatch(type=ofc.OFPMT.OXM, length=14, oxm_field=oxm_field)
+
+    action_to_send = OFPActionOut(
+        type=ofc.OFPAT.OUTPUT, len=16, port=out_port, max_len=0xFFFF
+    )
+    action_data = action_to_send.pack()
+
+    inst_to_send = OFPInstructionActions(
+        type=ofc.OFPIT.APPLY_ACTIONS, len=24
+    )
+    inst_data = inst_to_send.pack()
+
+    # FlowMod Fixed (40 bytes) - Priority 100, Idle Timeout 30s
+    flow_mod_to_send = OFPFlowMod(
+        cookie=0,
+        cookie_mask=0,
+        table_id=0,
+        command=ofc.OFPFC.ADD,
+        idle_timeout=30,
+        hard_timeout=0,
+        priority=100,
+        buffer_id=ofc.OFP.NO_BUFFER,
+        out_port= ofc.OFPP.ANY,
+        out_group=ofc.OFPG.ANY,
+        flags=0,
+        match=match_to_send,
+    )
+    flow_mod_data = flow_mod_to_send.pack()
+
+    message_length = 8 + 56 + 24  # instr len includes action data too
+    header_to_send = OFPHeader(
+        version=ofc.OF_VERSION_1_3,
+        message_type=ofc.OFPT.FLOW_MOD,
+        message_length=message_length,
+        xid=xid,
+    )
+    header_data = header_to_send.pack()
+    connection.sendall(
+        header_data + flow_mod_data + inst_data + action_data
+    )
+    # print(
+    #     f"[{formatted_dpid}] Flow Installed: {dst_mac.hex(':')} -> Port {out_port}"
+    # )
+
+def send_packet_out(connection, packet_in_body,in_port, out_port, ethernet_frame, xid):
+    action_to_send = OFPActionOut(
+        type=ofc.OFPAT.OUTPUT, len=16, port=out_port, max_len=0xFFFF
+    )
+    action_data = action_to_send.pack()
+
+    po_body_len = 16 + 16  # Fixed Body + 1 Action
+    if packet_in_body.buffer_id == 0xFFFFFFFF:
+        po_body_len += len(ethernet_frame)
+
+    message_length = 8 + po_body_len
+    header_to_send = OFPHeader(
+        version=ofc.OF_VERSION_1_3,
+        message_type=ofc.OFPT.PACKET_OUT,
+        message_length=message_length,
+        xid=xid,
+    )
+    header_data = header_to_send.pack()
+
+    packet_out_to_send = OFPPacketOut(
+        buffer_id=packet_in_body.buffer_id, in_port=in_port, actions_len=16
+    )
+    packet_out_data = packet_out_to_send.pack()
+
+    packet_out_msg = header_data + packet_out_data + action_data
+    if packet_in_body.buffer_id == 0xFFFFFFFF:
+        packet_out_msg += ethernet_frame
+
+    connection.sendall(packet_out_msg)
+
+    # print(f'packet sent, src:{src_mac.hex(':')} -> dst: {dst_mac.hex(':')}')
