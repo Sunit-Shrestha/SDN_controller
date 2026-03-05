@@ -18,6 +18,10 @@ class OFPT(IntEnum):
 class OFPP(IntEnum):
     FLOOD = 0xFFFFFFFB
     CONTROLLER = 0xFFFFFFFD
+    ANY = 0xFFFFFFFF
+
+class OFPG(IntEnum):
+    ANY = 0xFFFFFFFF
 
 class OFP(IntEnum):
     NO_BUFFER = 0xFFFFFFFF
@@ -29,3 +33,9 @@ class OFPFC(IntEnum):
 
 class OFPMT(IntEnum):
     OXM = 1
+
+class OFPAT(IntEnum):
+    OUTPUT = 0
+
+class OFPIT(IntEnum):
+    APPLY_ACTIONS = 4

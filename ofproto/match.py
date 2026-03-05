@@ -16,7 +16,6 @@ class OFPMatch:
     type: int
     length: int
     oxm_field: bytes
-    padding: bytes
 
     STRUCT_FMT_FIXED = "!HH"
     STRUCT_SIZE_FIXED = struct.calcsize(STRUCT_FMT_FIXED)  # 4
@@ -33,16 +32,7 @@ class OFPMatch:
             cls.STRUCT_SIZE_FIXED : cls.STRUCT_SIZE_FIXED + oxm_field_length
         ]
 
-        total_length_with_padding = ((length + 7) // 8) * 8  # next multiple of 8
-        padding_len = total_length_with_padding - length
-        padding = data[
-            cls.STRUCT_SIZE_FIXED
-            + oxm_field_length : cls.STRUCT_SIZE_FIXED
-            + oxm_field_length
-            + padding_len
-        ]
-
-        return cls(type, length, oxm_field, padding)
+        return cls(type, length, oxm_field)
 
     def pack(self) -> bytes:
         """
