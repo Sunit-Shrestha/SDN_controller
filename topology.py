@@ -134,6 +134,34 @@ def print_topology():
     print('Total Links:',len(all_links))
 
 
+def get_switch_link_ports(dpid: str) -> set:
+    """
+    Ports on this switch that participate in switch-switch links,
+    considering both outgoing and incoming directed link entries.
+    """
+    with _lock:
+        ports = set()
+        for (src_dpid, src_port), link_info in links.items():
+            dst_dpid, dst_port = link_info['dst']
+            if src_dpid == dpid:
+                ports.add(src_port)
+            if dst_dpid == dpid:
+                ports.add(dst_port)
+        return ports
+
+
+def get_inter_switch_ports(dpid: str) -> set:
+    """Return the set of ports on dpid that connect to other switches."""
+    return get_switch_link_ports(dpid)
+
+
+def get_host_ports(dpid: str) -> set:
+    """Return ports on dpid that are NOT inter-switch (i.e. host-facing)."""
+    with _lock:
+        all_ports = set(port_map.get(dpid, set()))
+    return all_ports - get_switch_link_ports(dpid)
+
+
 def deregister_switch(dpid: str):
     """
     Remove all topology state for a switch that has disconnected.
@@ -141,8 +169,12 @@ def deregister_switch(dpid: str):
     """
     with _lock:
         port_map.pop(dpid, None)
-        # Remove directed links that originated from this switch
-        stale = [k for k in links if k[0] == dpid]
+        stale = []
+        for key, info in links.items():
+            src_dpid, _ = key
+            dst_dpid, _ = info['dst']
+            if src_dpid == dpid or dst_dpid == dpid:
+                stale.append(key)
         for k in stale:
             del links[k]
 
@@ -171,7 +203,7 @@ def find_path(src_dpid: str, dst_dpid: str) -> list:
     with _lock:
         links_snapshot = dict(links)
 
-    queue   = deque()
+    queue = deque()
     visited = set()
     queue.append((src_dpid, []))
     visited.add(src_dpid)
@@ -180,7 +212,7 @@ def find_path(src_dpid: str, dst_dpid: str) -> list:
         current_dpid, path = queue.popleft()
 
         for (s_dpid, s_port), link_info in links_snapshot.items():
-            d_dpid, d_port = link_info['dst']
+            d_dpid, _d_port = link_info['dst']
             if s_dpid != current_dpid:
                 continue
             if d_dpid in visited:
@@ -194,8 +226,8 @@ def find_path(src_dpid: str, dst_dpid: str) -> list:
             visited.add(d_dpid)
             queue.append((d_dpid, new_path))
 
-    print(f"[BFS] No path found!")
-    return []   # no path found
+    print("[BFS] No path found!")
+    return []
 
 
 def get_switch_for_mac(mac: bytes, mac_to_port: dict) -> tuple:
@@ -207,17 +239,3 @@ def get_switch_for_mac(mac: bytes, mac_to_port: dict) -> tuple:
         if mac in table:
             return dpid, table[mac]
     return None, None
-
-
-def get_inter_switch_ports(dpid: str) -> set:
-    """Return the set of ports on dpid that connect to other switches."""
-    with _lock:
-        return {sp for (sd, sp) in links if sd == dpid}
-
-
-def get_host_ports(dpid: str) -> set:
-    """Return ports on dpid that are NOT inter-switch (i.e. host-facing)."""
-    with _lock:
-        all_ports = set(port_map.get(dpid, set()))
-        inter = {sp for (sd, sp) in links if sd == dpid}
-        return all_ports - inter
