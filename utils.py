@@ -307,3 +307,34 @@ def send_raw_packet_out(connection, ethernet_frame: bytes, out_port: int, xid: i
         connection,
         header.pack() + packet_out_to_send.pack() + action_data + ethernet_frame,
     )
+
+def remove_mac_flow(connection, dst_mac: bytes, xid: int = 0):
+    """
+    Delete flow entries matching eth_dst=dst_mac.
+    """
+    oxm_field = struct.pack("!HBB6s", 0x8000, 3 << 1, 6, dst_mac)
+    match_to_send = OFPMatch(type=ofc.OFPMT.OXM, length=14, oxm_field=oxm_field)
+
+    flow_mod_to_send = OFPFlowMod(
+        cookie=0,
+        cookie_mask=0,
+        table_id=0,
+        command=ofc.OFPFC.DELETE,
+        idle_timeout=0,
+        hard_timeout=0,
+        priority=0,
+        buffer_id=ofc.OFP.NO_BUFFER,
+        out_port=ofc.OFPP.ANY,
+        out_group=ofc.OFPG.ANY,
+        flags=0,
+        match=match_to_send,
+    )
+    flow_mod_data = flow_mod_to_send.pack()
+
+    header_to_send = OFPHeader(
+        version=ofc.OF_VERSION_1_3,
+        message_type=ofc.OFPT.FLOW_MOD,
+        message_length=8 + len(flow_mod_data),
+        xid=xid,
+    )
+    locked_send(connection, header_to_send.pack() + flow_mod_data)

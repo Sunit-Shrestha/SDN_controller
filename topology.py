@@ -1,5 +1,6 @@
 import threading
 from collections import deque
+import time
 
 
 # Global topology state
@@ -8,8 +9,24 @@ from collections import deque
 # _lock      : protects both dicts for thread-safe access (switches run on separate threads)
 
 port_map = {}   # str dpid -> set(int port_no)
-links    = {}   # (str dpid, int port) -> (str dpid, int port)
+# (src_dpid, src_port) -> {'dst': (dst_dpid, dst_port), 'last_seen': timestamp}
+links    = {}
 _lock    = threading.Lock()
+
+
+def remove_stale_links(timeout: float):
+    """
+    Remove links that have not been seen within the given timeout (in seconds).
+    Returns a list of removed links for logging or further action.
+    """
+    now = time.time()
+    removed = []
+    with _lock:
+        stale_keys = [key for key, info in links.items() if now - info['last_seen'] > timeout]
+        for key in stale_keys:
+            removed.append((key[0], key[1], links[key]['dst'][0], links[key]['dst'][1]))
+            del links[key]
+    return removed
 
 
 # ------------------------------------------------------------------ #
@@ -23,6 +40,17 @@ def register_ports(dpid: str, port_nos: list):
     """
     with _lock:
         port_map[dpid] = set(port_nos)
+
+
+def set_port_live(dpid: str, port_no: int, is_live: bool):
+    """Update local port map when a PORT_STATUS event is received."""
+    with _lock:
+        if dpid not in port_map:
+            port_map[dpid] = set()
+        if is_live:
+            port_map[dpid].add(port_no)
+        else:
+            port_map[dpid].discard(port_no)
 
 
 def get_ports(dpid: str) -> set:
@@ -40,9 +68,35 @@ def add_link(src_dpid: str, src_port: int, dst_dpid: str, dst_port: int):
     Record a directed link:  (src_dpid, src_port) -> (dst_dpid, dst_port)
     LLDP gives us directed links. Both directions will be added separately
     when the neighbour switch sends its own LLDP back.
+    Also updates the last_seen timestamp for the link.
     """
     with _lock:
-        links[(src_dpid, src_port)] = (dst_dpid, dst_port)
+        links[(src_dpid, src_port)] = {
+            'dst': (dst_dpid, dst_port),
+            'last_seen': time.time()
+        }
+
+
+def remove_links_for_port(dpid: str, port_no: int) -> list:
+    """
+    Remove all directed links attached to (dpid, port_no), including:
+    - outgoing links from this port
+    - incoming links whose destination is this port
+    Returns removed links as (src_dpid, src_port, dst_dpid, dst_port).
+    """
+    removed = []
+    with _lock:
+        to_delete = []
+        for (src_dpid, src_port), info in links.items():
+            dst_dpid, dst_port = info['dst']
+            if (src_dpid == dpid and src_port == port_no) or (dst_dpid == dpid and dst_port == port_no):
+                to_delete.append((src_dpid, src_port))
+
+        for key in to_delete:
+            dst_dpid, dst_port = links[key]['dst']
+            removed.append((key[0], key[1], dst_dpid, dst_port))
+            del links[key]
+    return removed
 
 
 def get_neighbours(dpid: str) -> list:
@@ -52,18 +106,19 @@ def get_neighbours(dpid: str) -> list:
     """
     with _lock:
         result = []
-        for (src_dpid, src_port), (dst_dpid, dst_port) in links.items():
+        for (src_dpid, src_port), link_info in links.items():
             if src_dpid == dpid:
+                dst_dpid, dst_port = link_info['dst']
                 result.append((src_port, dst_dpid, dst_port))
         return result
 
 
 def get_all_links() -> list:
-    """Return all known links as a list of (src_dpid, src_port, dst_dpid, dst_port)."""
+    """Return all known links as a list of (src_dpid, src_port, dst_dpid, dst_port, last_seen)."""
     with _lock:
         return [
-            (src_dpid, src_port, dst_dpid, dst_port)
-            for (src_dpid, src_port), (dst_dpid, dst_port) in links.items()
+            (src_dpid, src_port, link_info['dst'][0], link_info['dst'][1], link_info['last_seen'])
+            for (src_dpid, src_port), link_info in links.items()
         ]
 
 
@@ -74,8 +129,8 @@ def print_topology():
         print("[Topology] No links discovered yet.")
         return
     print("[Topology] Discovered Links:")
-    for src_dpid, src_port, dst_dpid, dst_port in sorted(all_links):
-        print(f"  {src_dpid}:{src_port}  -->  {dst_dpid}:{dst_port}")
+    for src_dpid, src_port, dst_dpid, dst_port, last_seen in sorted(all_links):
+        print(f"  {src_dpid}:{src_port}  -->  {dst_dpid}:{dst_port}  (last_seen: {last_seen:.0f})")
     print('Total Links:',len(all_links))
 
 
@@ -124,7 +179,8 @@ def find_path(src_dpid: str, dst_dpid: str) -> list:
     while queue:
         current_dpid, path = queue.popleft()
 
-        for (s_dpid, s_port), (d_dpid, d_port) in links_snapshot.items():
+        for (s_dpid, s_port), link_info in links_snapshot.items():
+            d_dpid, d_port = link_info['dst']
             if s_dpid != current_dpid:
                 continue
             if d_dpid in visited:

@@ -7,11 +7,15 @@ import topology
 import struct
 import threading
 
-LLDP_INTERVAL = 5
+LLDP_INTERVAL = 1
+
 
 switches    = {}
 mac_to_port = {}
 _pending_ports = {}
+
+# Track active flows: (src_mac, dst_mac) -> {'path': [(dpid, out_port), ...], 'dst_dpid': str, 'dst_port': int}
+active_flows = {}
 
 
 def start_lldp_sender():
@@ -20,11 +24,65 @@ def start_lldp_sender():
     print(f"[LLDP] Periodic sender started (interval={LLDP_INTERVAL}s)")
 
 
+def _reroute_affected_flows(removed_links: list, reason: str):
+    """Reroute flows that traverse any removed directed link."""
+    for src_dpid, src_port, dst_dpid, dst_port in removed_links:
+        print(f"[TOPOLOGY] Link removed ({reason}): {src_dpid}:{src_port} -> {dst_dpid}:{dst_port}")
+
+        affected_flows = []
+        for flow_key, flow_info in list(active_flows.items()):
+            path = flow_info['path']
+            for hop_dpid, hop_out_port in path:
+                if hop_dpid == src_dpid and hop_out_port == src_port:
+                    affected_flows.append(flow_key)
+                    break
+
+        for flow_key in affected_flows:
+            src_mac, dst_mac = flow_key
+            flow_info = active_flows[flow_key]
+            dst_dpid = flow_info['dst_dpid']
+            dst_port = flow_info['dst_port']
+
+            if not flow_info['path']:
+                continue
+
+            src_dpid_for_flow = flow_info['path'][0][0]
+            new_path = topology.find_path(src_dpid_for_flow, dst_dpid)
+
+            # Always remove old rules first (best effort)
+            for hop_dpid, _ in flow_info['path']:
+                hop_conn = switches.get(hop_dpid)
+                if hop_conn:
+                    utils.remove_mac_flow(hop_conn, dst_mac)
+            dst_conn = switches.get(dst_dpid)
+            if dst_conn:
+                utils.remove_mac_flow(dst_conn, dst_mac)
+
+            if not new_path:
+                print(f"[REROUTE] No alternate path for flow {src_mac.hex(':')}->{dst_mac.hex(':')}, dropped old rules.")
+                del active_flows[flow_key]
+                continue
+
+            for hop_dpid, hop_out_port in new_path:
+                hop_conn = switches.get(hop_dpid)
+                if hop_conn:
+                    utils.install_mac_flow(hop_conn, dst_mac, hop_out_port, xid=0)
+
+            dst_conn = switches.get(dst_dpid)
+            if dst_conn:
+                utils.install_mac_flow(dst_conn, dst_mac, dst_port, xid=0)
+
+            active_flows[flow_key]['path'] = list(new_path)
+            print(f"[REROUTE] Flow {src_mac.hex(':')}->{dst_mac.hex(':')} rerouted.")
+
+
 def _lldp_sender_loop():
     stop = threading.Event()
     prev_links = set()
+    LINK_TIMEOUT = 2 * LLDP_INTERVAL
 
     while not stop.wait(LLDP_INTERVAL):
+        # Send LLDP packets
         for dpid, connection in list(switches.items()):
             port_nos = topology.get_ports(dpid)
             if not port_nos:
@@ -36,7 +94,14 @@ def _lldp_sender_loop():
                 except Exception:
                     pass
 
-        current_links = set(topology.get_all_links())
+
+        # Remove stale links and reroute affected flows
+        removed_links = topology.remove_stale_links(LINK_TIMEOUT)
+        if removed_links:
+            _reroute_affected_flows(removed_links, reason="lldp-timeout")
+
+        # Print topology if changed
+        current_links = set((l[0], l[1], l[2], l[3]) for l in topology.get_all_links())
         if current_links and (not prev_links or current_links != prev_links):
             topology.print_topology()
             prev_links = current_links
@@ -89,6 +154,15 @@ def handle_switch_connection(connection, address):
                     formatted_dpid=formatted_dpid,
                     mac_to_port=mac_to_port,
                     xid=header.xid,
+                )
+
+            elif header.message_type == ofc.OFPT.PORT_STATUS:
+                if not formatted_dpid:
+                    continue
+                handle_port_status(
+                    connection=connection,
+                    body_data=body_data,
+                    formatted_dpid=formatted_dpid,
                 )
 
         except Exception as e:
@@ -159,8 +233,8 @@ def handle_packet_in(connection, body_data, formatted_dpid, mac_to_port, xid):
                 src_port = lldp_pkt.get_port_number()
                 if src_mac and src_port is not None and in_port is not None:
                     src_dpid = '00:00:' + ':'.join(f'{b:02x}' for b in src_mac)
+                    # Add only observed direction
                     topology.add_link(src_dpid, src_port, formatted_dpid, in_port)
-                    topology.add_link(formatted_dpid, in_port, src_dpid, src_port)
             return
 
     if in_port is None:
@@ -238,6 +312,7 @@ def handle_packet_in(connection, body_data, formatted_dpid, mac_to_port, xid):
         )
         return
 
+
     # 5c. Known unicast on different switch - compute path and install flows
     path = topology.find_path(formatted_dpid, dst_dpid)
 
@@ -255,6 +330,14 @@ def handle_packet_in(connection, body_data, formatted_dpid, mac_to_port, xid):
     if dst_connection:
         utils.install_mac_flow(dst_connection, dst_mac, dst_port, xid)
 
+    # Track the flow and its path for rerouting
+    flow_key = (bytes(src_mac), bytes(dst_mac))
+    active_flows[flow_key] = {
+        'path': list(path),
+        'dst_dpid': dst_dpid,
+        'dst_port': dst_port
+    }
+
     # Forward this packet out the first hop
     first_out_port = path[0][1]
     utils.send_packet_out(
@@ -265,3 +348,39 @@ def handle_packet_in(connection, body_data, formatted_dpid, mac_to_port, xid):
         ethernet_frame=ethernet_frame,
         xid=xid,
     )
+    return
+
+
+def handle_port_status(connection, body_data, formatted_dpid):
+    """
+    Handle OFPT_PORT_STATUS for immediate link down/up events.
+    body_data layout (OpenFlow 1.3): reason(1), pad(7), ofp_port desc...
+    """
+    if len(body_data) < 48:
+        return
+
+    reason = body_data[0]
+    port_no = struct.unpack('!I', body_data[8:12])[0]
+    state = struct.unpack('!I', body_data[44:48])[0]
+
+    # Ignore reserved/non-physical ports
+    if port_no >= 0xFFFFFF00:
+        return
+
+    link_down = (state & int(ofc.OFPPS.LINK_DOWN)) != 0
+
+    if link_down or reason == 1:  # reason==DELETE
+        topology.set_port_live(formatted_dpid, port_no, is_live=False)
+        removed_links = topology.remove_links_for_port(formatted_dpid, port_no)
+        if removed_links:
+            _reroute_affected_flows(removed_links, reason="port-status")
+    else:
+        topology.set_port_live(formatted_dpid, port_no, is_live=True)
+        # Probe immediately so the link can be rediscovered without waiting a full cycle
+        conn = switches.get(formatted_dpid)
+        if conn:
+            try:
+                dpid_int = int(formatted_dpid.replace(':', ''), 16)
+                utils.send_lldp_out(conn, dpid_int, port_no, xid=0)
+            except Exception:
+                pass

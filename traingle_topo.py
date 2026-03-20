@@ -1,27 +1,25 @@
 from mininet.topo import Topo
 
-class TriangleTopo( Topo ):
-    "Simple Loop Topology (Triangle)"
+class LoopTopo(Topo):
+    def build(self):
+        # Switches
+        s1 = self.addSwitch('s1')
+        s2 = self.addSwitch('s2')
+        s3 = self.addSwitch('s3')
 
-    def build( self ):
-        # Add switches
-        s1 = self.addSwitch( 's1' )
-        s2 = self.addSwitch( 's2' )
-        s3 = self.addSwitch( 's3' )
+        # Hosts
+        h1 = self.addHost('h1')
+        h2 = self.addHost('h2')
 
-        # Add hosts
-        h1 = self.addHost( 'h1' )
-        h2 = self.addHost( 'h2' )
-        h3 = self.addHost( 'h3' )
+        # Host connections
+        self.addLink(h1, s1)
+        self.addLink(h2, s3)
 
-        # Add links to hosts
-        self.addLink( h1, s1 )
-        self.addLink( h2, s2 )
-        self.addLink( h3, s3 )
+        # Main path
+        self.addLink(s1, s2)
+        self.addLink(s2, s3)
 
-        # Add links between switches to form a loop
-        self.addLink( s1, s2 )
-        self.addLink( s2, s3 )
-        self.addLink( s3, s1 )
+        # Alternate path (loop)
+        self.addLink(s1, s3)
 
-topos = { 'triangle': ( lambda: TriangleTopo() ) }
+topos = {'looptopo': LoopTopo}

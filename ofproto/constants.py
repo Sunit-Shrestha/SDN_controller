@@ -10,11 +10,16 @@ class OFPT(IntEnum):
     EXPERIMENTER = 4
     FEATURES_REQUEST = 5
     FEATURES_REPLY = 6
+    PORT_STATUS = 12
     PACKET_IN = 10
     PACKET_OUT = 13
     FLOW_MOD = 14
     MULTIPART_REQUEST = 18
     MULTIPART_REPLY = 19
+
+
+class OFPPS(IntEnum):
+    LINK_DOWN = 1
 
 
 class OFPP(IntEnum):
