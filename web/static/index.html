@@ -7,10 +7,12 @@
     body { margin: 0; padding: 0; overflow: hidden; font-family: sans-serif; background: #fafafa; }
     #cy { width: 100vw; height: 100vh; display: block; }
     #status { position: absolute; top: 10px; left: 10px; z-index: 10; padding: 10px; background: rgba(255,255,255,0.9); border-radius: 4px; box-shadow: 0 0 5px rgba(0,0,0,0.2); }
+    #tooltip { position: absolute; z-index: 20; display: none; padding: 6px 8px; font-size: 12px; color: #111; background: rgba(255,255,255,0.95); border: 1px solid #ddd; border-radius: 6px; box-shadow: 0 2px 8px rgba(0,0,0,0.15); pointer-events: none; }
   </style>
 </head>
 <body>
   <div id="status">Connecting...</div>
+  <div id="tooltip"></div>
   <div id="cy"></div>
   <script>
     // Initialize empty Cytoscape instance
@@ -18,13 +20,74 @@
       container: document.getElementById('cy'),
       style: [
         { selector: 'node', style: { 'label': 'data(label)', 'background-color': '#0074D9', 'color': '#fff', 'text-valign': 'center', 'text-halign': 'center', 'width': 40, 'height': 40 } },
-        { selector: 'edge', style: { 'label': 'data(label)', 'width': 2, 'line-color': '#aaa', 'target-arrow-shape': 'triangle', 'curve-style': 'bezier', 'font-size': '10px', 'text-margin-y': -10 } }
+        { selector: 'edge', style: { 'width': 2, 'line-color': '#aaa', 'target-arrow-shape': 'triangle', 'curve-style': 'bezier' } },
+        { selector: 'edge.undirected', style: { 'target-arrow-shape': 'none', 'line-style': 'solid' } }
       ],
       layout: { name: 'cose' }
     });
 
     const statusEl = document.getElementById('status');
+    const tooltipEl = document.getElementById('tooltip');
     const ws = new WebSocket(`ws://${location.host}/ws/topology`);
+
+    // Mininet assigns DPIDs as 00:00:00:00:00:00:00:01, ...
+    function getSwitchAlias(dpid) {
+      // Mininet torus/grid: last two bytes are row, col (e.g., 00:...:01:02)
+      const parts = dpid.split(":");
+      if (parts.length >= 2) {
+        const row = parseInt(parts[parts.length - 2], 16);
+        const col = parseInt(parts[parts.length - 1], 16);
+        // If row or col is 0, treat as linear (s1, s2, ...)
+        if (row > 0 && col > 0) {
+          return `s${row}x${col}`;
+        } else {
+          // fallback: just use last byte
+          return `s${col}`;
+        }
+      } else if (dpid.length > 0) {
+        // fallback: try last two chars
+        const num = parseInt(dpid.slice(-2), 16);
+        return `s${num}`;
+      }
+      return dpid;
+    }
+
+    function placeTooltip(event) {
+      const e = event.originalEvent;
+      if (!e) return;
+      tooltipEl.style.left = `${e.clientX + 12}px`;
+      tooltipEl.style.top = `${e.clientY + 12}px`;
+    }
+
+    cy.on('mouseover', 'node', (event) => {
+      const node = event.target;
+      tooltipEl.textContent = `${node.data('label')} • ${node.data('mac')}`;
+      tooltipEl.style.display = 'block';
+      placeTooltip(event);
+    });
+
+    cy.on('mousemove', 'node', (event) => {
+      placeTooltip(event);
+    });
+
+    cy.on('mouseout', 'node', () => {
+      tooltipEl.style.display = 'none';
+    });
+
+    cy.on('mouseover', 'edge', (event) => {
+      const edge = event.target;
+      tooltipEl.textContent = edge.data('hoverLabel');
+      tooltipEl.style.display = 'block';
+      placeTooltip(event);
+    });
+
+    cy.on('mousemove', 'edge', (event) => {
+      placeTooltip(event);
+    });
+
+    cy.on('mouseout', 'edge', () => {
+      tooltipEl.style.display = 'none';
+    });
 
     ws.onopen = () => statusEl.textContent = 'Connected (Waiting for Mininet)';
     ws.onclose = () => statusEl.textContent = 'Disconnected from Server';
@@ -49,16 +112,43 @@
 
       // Prepare new elements
       const elements = [];
-      data.switches.forEach(s => elements.push({ group: 'nodes', data: { id: s, label: `S-${s}` } }));
-      data.links.forEach(l => elements.push({
-        group: 'edges',
+      data.switches.forEach(s => elements.push({
+        group: 'nodes',
         data: {
-          id: `${l.src_dpid}:${l.src_port}->${l.dst_dpid}:${l.dst_port}`,
-          source: l.src_dpid,
-          target: l.dst_dpid,
-          label: `p${l.src_port} → p${l.dst_port}`
+          id: s,
+          label: getSwitchAlias(s),
+          mac: s
         }
       }));
+
+      // Deduplicate bidirectional links
+      const linkSet = new Set();
+      data.links.forEach(l => {
+        // Create a unique key for each undirected link
+        const key1 = `${l.src_dpid}:${l.src_port}-${l.dst_dpid}:${l.dst_port}`;
+        const key2 = `${l.dst_dpid}:${l.dst_port}-${l.src_dpid}:${l.src_port}`;
+        if (!linkSet.has(key1) && !linkSet.has(key2)) {
+          linkSet.add(key1);
+          // If the reverse exists, make it undirected
+          const isBidirectional = data.links.some(
+            other => other.src_dpid === l.dst_dpid && other.src_port === l.dst_port &&
+                          other.dst_dpid === l.src_dpid && other.dst_port === l.src_port
+          );
+          const srcAlias = getSwitchAlias(l.src_dpid);
+          const dstAlias = getSwitchAlias(l.dst_dpid);
+          const hoverLabel = [srcAlias, dstAlias].sort((a, b) => a.localeCompare(b, undefined, { numeric: true })).join('-');
+          elements.push({
+            group: 'edges',
+            data: {
+              id: `undirected:${l.src_dpid}:${l.src_port}<->${l.dst_dpid}:${l.dst_port}`,
+              source: l.src_dpid,
+              target: l.dst_dpid,
+              hoverLabel
+            },
+            classes: isBidirectional ? 'undirected' : ''
+          });
+        }
+      });
 
       // Update Cytoscape elements smoothly
       cy.elements().remove();
