@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>SDN Topology Visualization</title>
+  <script src="https://unpkg.com/cytoscape/dist/cytoscape.min.js"></script>
+  <style>
+    body { margin: 0; padding: 0; overflow: hidden; font-family: sans-serif; background: #fafafa; }
+    #cy { width: 100vw; height: 100vh; display: block; }
+    #status { position: absolute; top: 10px; left: 10px; z-index: 10; padding: 10px; background: rgba(255,255,255,0.9); border-radius: 4px; box-shadow: 0 0 5px rgba(0,0,0,0.2); }
+    #tooltip { position: absolute; z-index: 20; display: none; padding: 6px 8px; font-size: 12px; color: #111; background: rgba(255,255,255,0.95); border: 1px solid #ddd; border-radius: 6px; box-shadow: 0 2px 8px rgba(0,0,0,0.15); pointer-events: none; }
+  </style>
+</head>
+<body>
+  <div id="status">Connecting...</div>
+  <div id="tooltip"></div>
+  <div id="cy"></div>
+  <script>
+    // Initialize empty Cytoscape instance
+    const cy = cytoscape({
+      container: document.getElementById('cy'),
+      style: [
+        { selector: 'node', style: { 'label': 'data(label)', 'background-color': '#0074D9', 'color': '#fff', 'text-valign': 'center', 'text-halign': 'center', 'width': 40, 'height': 40 } },
+        { selector: 'edge', style: { 'width': 2, 'line-color': '#aaa', 'target-arrow-shape': 'triangle', 'curve-style': 'bezier' } },
+        { selector: 'edge.undirected', style: { 'target-arrow-shape': 'none', 'line-style': 'solid' } }
+      ],
+      layout: { name: 'cose' }
+    });
+
+    const statusEl = document.getElementById('status');
+    const tooltipEl = document.getElementById('tooltip');
+    const ws = new WebSocket(`ws://${location.host}/ws/topology`);
+
+    // Mininet assigns DPIDs as 00:00:00:00:00:00:00:01, ...
+    function getSwitchAlias(dpid) {
+      // Mininet torus/grid: last two bytes are row, col (e.g., 00:...:01:02)
+      const parts = dpid.split(":");
+      if (parts.length >= 2) {
+        const row = parseInt(parts[parts.length - 2], 16);
+        const col = parseInt(parts[parts.length - 1], 16);
+        // If row or col is 0, treat as linear (s1, s2, ...)
+        if (row > 0 && col > 0) {
+          return `s${row}x${col}`;
+        } else {
+          // fallback: just use last byte
+          return `s${col}`;
+        }
+      } else if (dpid.length > 0) {
+        // fallback: try last two chars
+        const num = parseInt(dpid.slice(-2), 16);
+        return `s${num}`;
+      }
+      return dpid;
+    }
+
+    function placeTooltip(event) {
+      const e = event.originalEvent;
+      if (!e) return;
+      tooltipEl.style.left = `${e.clientX + 12}px`;
+      tooltipEl.style.top = `${e.clientY + 12}px`;
+    }
+
+    cy.on('mouseover', 'node', (event) => {
+      const node = event.target;
+      tooltipEl.textContent = `${node.data('label')} • ${node.data('mac')}`;
+      tooltipEl.style.display = 'block';
+      placeTooltip(event);
+    });
+
+    cy.on('mousemove', 'node', (event) => {
+      placeTooltip(event);
+    });
+
+    cy.on('mouseout', 'node', () => {
+      tooltipEl.style.display = 'none';
+    });
+
+    cy.on('mouseover', 'edge', (event) => {
+      const edge = event.target;
+      tooltipEl.textContent = edge.data('hoverLabel');
+      tooltipEl.style.display = 'block';
+      placeTooltip(event);
+    });
+
+    cy.on('mousemove', 'edge', (event) => {
+      placeTooltip(event);
+    });
+
+    cy.on('mouseout', 'edge', () => {
+      tooltipEl.style.display = 'none';
+    });
+
+    ws.onopen = () => statusEl.textContent = 'Connected (Waiting for Mininet)';
+    ws.onclose = () => statusEl.textContent = 'Disconnected from Server';
+    
+    // Keep track of the nodes and edges so we don't redraw if nothing changed
+    let lastTopologyString = "";
+
+    function endpointToken(dpid, port) {
+      return `${dpid}:${port}`;
+    }
+
+    function buildDesiredGraph(data) {
+      const nodesById = new Map();
+      const edgesById = new Map();
+
+      data.switches.forEach((s) => {
+        nodesById.set(s, {
+          group: 'nodes',
+          data: {
+            id: s,
+            label: getSwitchAlias(s),
+            mac: s
+          }
+        });
+      });
+
+      // Deduplicate bidirectional links (A->B and B->A shown once)
+      const seenPairs = new Set();
+      data.links.forEach((l) => {
+        const a = endpointToken(l.src_dpid, l.src_port);
+        const b = endpointToken(l.dst_dpid, l.dst_port);
+        const pairKey = [a, b].sort().join('||');
+        if (seenPairs.has(pairKey)) {
+          return;
+        }
+        seenPairs.add(pairKey);
+
+        const isBidirectional = data.links.some(
+          (other) => other.src_dpid === l.dst_dpid && other.src_port === l.dst_port &&
+                     other.dst_dpid === l.src_dpid && other.dst_port === l.src_port
+        );
+
+        const srcAlias = getSwitchAlias(l.src_dpid);
+        const dstAlias = getSwitchAlias(l.dst_dpid);
+        const hoverLabel = [srcAlias, dstAlias]
+          .sort((x, y) => x.localeCompare(y, undefined, { numeric: true }))
+          .join('-');
+
+        // Stable edge id for the same physical pair, regardless of message direction order
+        const edgeId = `link:${pairKey}`;
+        edgesById.set(edgeId, {
+          group: 'edges',
+          data: {
+            id: edgeId,
+            source: l.src_dpid,
+            target: l.dst_dpid,
+            hoverLabel
+          },
+          classes: isBidirectional ? 'undirected' : ''
+        });
+      });
+
+      return { nodesById, edgesById };
+    }
+
+    function applyIncrementalGraphUpdate(data) {
+      const { nodesById, edgesById } = buildDesiredGraph(data);
+
+      let nodeSetChanged = false;
+
+      cy.batch(() => {
+        // Remove edges that no longer exist
+        cy.edges().forEach((edge) => {
+          if (!edgesById.has(edge.id())) {
+            edge.remove();
+          }
+        });
+
+        // Remove nodes that no longer exist
+        cy.nodes().forEach((node) => {
+          if (!nodesById.has(node.id())) {
+            node.remove();
+            nodeSetChanged = true;
+          }
+        });
+
+        // Add missing nodes and update existing node data
+        nodesById.forEach((nodeEl, nodeId) => {
+          const existing = cy.getElementById(nodeId);
+          if (existing && existing.length > 0) {
+            existing.data(nodeEl.data);
+          } else {
+            cy.add(nodeEl);
+            nodeSetChanged = true;
+          }
+        });
+
+        // Add missing edges and update existing edge data/classes
+        edgesById.forEach((edgeEl, edgeId) => {
+          const existing = cy.getElementById(edgeId);
+          if (existing && existing.length > 0) {
+            existing.data(edgeEl.data);
+            existing.classes(edgeEl.classes || '');
+          } else {
+            cy.add(edgeEl);
+          }
+        });
+      });
+
+      // Re-run layout only when switches are added/removed; link changes should not reposition all nodes.
+      if (nodeSetChanged) {
+        cy.layout({ name: 'cose', animate: true, animationDuration: 250 }).run();
+      }
+    }
+
+    ws.onmessage = (event) => {
+      const data = JSON.parse(event.data);
+      if (data.switches.length > 0) {
+        statusEl.textContent = `Switches: ${data.switches.length} | Links: ${data.links.length}`;
+      } else {
+        statusEl.textContent = 'Connected (Waiting for Mininet to start...)';
+      }
+
+      // Check if topology actually changed before re-rendering
+      const currentTopologyString = JSON.stringify(data);
+      if (currentTopologyString === lastTopologyString) {
+          return; // No changes, do nothing.
+      }
+      lastTopologyString = currentTopologyString;
+
+      // Incremental update: only changed links/nodes are updated
+      applyIncrementalGraphUpdate(data);
+    };
+
+    // Note: If you have an existing fetchTopology/setInterval left over from the very first setup, it's removed now.
+  </script>
+</body>
+</html>
