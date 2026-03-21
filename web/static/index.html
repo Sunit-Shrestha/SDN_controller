@@ -255,6 +255,12 @@
         statusEl.textContent = 'Connected (Waiting for Mininet to start...)';
       }
 
+      // --- Reset host aliases if all hosts are gone ---
+      if ((data.hosts || []).length === 0) {
+        hostAliases.clear();
+        hostCounter = 1;
+      }
+
       // Check if topology actually changed before re-rendering
       const currentTopologyString = JSON.stringify(data);
       if (currentTopologyString === lastTopologyString) {
