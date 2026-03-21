@@ -122,6 +122,15 @@ def get_all_links() -> list:
         ]
 
 
+def get_link_destination(src_dpid: str, src_port: int):
+    """Return (dst_dpid, dst_port) for a directed link, or None if unknown."""
+    with _lock:
+        info = links.get((src_dpid, src_port))
+        if not info:
+            return None
+        return info['dst']
+
+
 def print_topology():
     """Pretty-print the current known topology."""
     all_links = get_all_links()
