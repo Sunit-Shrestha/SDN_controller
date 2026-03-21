@@ -95,6 +95,114 @@
     // Keep track of the nodes and edges so we don't redraw if nothing changed
     let lastTopologyString = "";
 
+    function endpointToken(dpid, port) {
+      return `${dpid}:${port}`;
+    }
+
+    function buildDesiredGraph(data) {
+      const nodesById = new Map();
+      const edgesById = new Map();
+
+      data.switches.forEach((s) => {
+        nodesById.set(s, {
+          group: 'nodes',
+          data: {
+            id: s,
+            label: getSwitchAlias(s),
+            mac: s
+          }
+        });
+      });
+
+      // Deduplicate bidirectional links (A->B and B->A shown once)
+      const seenPairs = new Set();
+      data.links.forEach((l) => {
+        const a = endpointToken(l.src_dpid, l.src_port);
+        const b = endpointToken(l.dst_dpid, l.dst_port);
+        const pairKey = [a, b].sort().join('||');
+        if (seenPairs.has(pairKey)) {
+          return;
+        }
+        seenPairs.add(pairKey);
+
+        const isBidirectional = data.links.some(
+          (other) => other.src_dpid === l.dst_dpid && other.src_port === l.dst_port &&
+                     other.dst_dpid === l.src_dpid && other.dst_port === l.src_port
+        );
+
+        const srcAlias = getSwitchAlias(l.src_dpid);
+        const dstAlias = getSwitchAlias(l.dst_dpid);
+        const hoverLabel = [srcAlias, dstAlias]
+          .sort((x, y) => x.localeCompare(y, undefined, { numeric: true }))
+          .join('-');
+
+        // Stable edge id for the same physical pair, regardless of message direction order
+        const edgeId = `link:${pairKey}`;
+        edgesById.set(edgeId, {
+          group: 'edges',
+          data: {
+            id: edgeId,
+            source: l.src_dpid,
+            target: l.dst_dpid,
+            hoverLabel
+          },
+          classes: isBidirectional ? 'undirected' : ''
+        });
+      });
+
+      return { nodesById, edgesById };
+    }
+
+    function applyIncrementalGraphUpdate(data) {
+      const { nodesById, edgesById } = buildDesiredGraph(data);
+
+      let nodeSetChanged = false;
+
+      cy.batch(() => {
+        // Remove edges that no longer exist
+        cy.edges().forEach((edge) => {
+          if (!edgesById.has(edge.id())) {
+            edge.remove();
+          }
+        });
+
+        // Remove nodes that no longer exist
+        cy.nodes().forEach((node) => {
+          if (!nodesById.has(node.id())) {
+            node.remove();
+            nodeSetChanged = true;
+          }
+        });
+
+        // Add missing nodes and update existing node data
+        nodesById.forEach((nodeEl, nodeId) => {
+          const existing = cy.getElementById(nodeId);
+          if (existing && existing.length > 0) {
+            existing.data(nodeEl.data);
+          } else {
+            cy.add(nodeEl);
+            nodeSetChanged = true;
+          }
+        });
+
+        // Add missing edges and update existing edge data/classes
+        edgesById.forEach((edgeEl, edgeId) => {
+          const existing = cy.getElementById(edgeId);
+          if (existing && existing.length > 0) {
+            existing.data(edgeEl.data);
+            existing.classes(edgeEl.classes || '');
+          } else {
+            cy.add(edgeEl);
+          }
+        });
+      });
+
+      // Re-run layout only when switches are added/removed; link changes should not reposition all nodes.
+      if (nodeSetChanged) {
+        cy.layout({ name: 'cose', animate: true, animationDuration: 250 }).run();
+      }
+    }
+
     ws.onmessage = (event) => {
       const data = JSON.parse(event.data);
       if (data.switches.length > 0) {
@@ -110,50 +218,8 @@
       }
       lastTopologyString = currentTopologyString;
 
-      // Prepare new elements
-      const elements = [];
-      data.switches.forEach(s => elements.push({
-        group: 'nodes',
-        data: {
-          id: s,
-          label: getSwitchAlias(s),
-          mac: s
-        }
-      }));
-
-      // Deduplicate bidirectional links
-      const linkSet = new Set();
-      data.links.forEach(l => {
-        // Create a unique key for each undirected link
-        const key1 = `${l.src_dpid}:${l.src_port}-${l.dst_dpid}:${l.dst_port}`;
-        const key2 = `${l.dst_dpid}:${l.dst_port}-${l.src_dpid}:${l.src_port}`;
-        if (!linkSet.has(key1) && !linkSet.has(key2)) {
-          linkSet.add(key1);
-          // If the reverse exists, make it undirected
-          const isBidirectional = data.links.some(
-            other => other.src_dpid === l.dst_dpid && other.src_port === l.dst_port &&
-                          other.dst_dpid === l.src_dpid && other.dst_port === l.src_port
-          );
-          const srcAlias = getSwitchAlias(l.src_dpid);
-          const dstAlias = getSwitchAlias(l.dst_dpid);
-          const hoverLabel = [srcAlias, dstAlias].sort((a, b) => a.localeCompare(b, undefined, { numeric: true })).join('-');
-          elements.push({
-            group: 'edges',
-            data: {
-              id: `undirected:${l.src_dpid}:${l.src_port}<->${l.dst_dpid}:${l.dst_port}`,
-              source: l.src_dpid,
-              target: l.dst_dpid,
-              hoverLabel
-            },
-            classes: isBidirectional ? 'undirected' : ''
-          });
-        }
-      });
-
-      // Update Cytoscape elements smoothly
-      cy.elements().remove();
-      cy.add(elements);
-      cy.layout({ name: 'cose', animate: true, animationDuration: 300 }).run();
+      // Incremental update: only changed links/nodes are updated
+      applyIncrementalGraphUpdate(data);
     };
 
     // Note: If you have an existing fetchTopology/setInterval left over from the very first setup, it's removed now.
