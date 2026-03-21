@@ -258,7 +258,10 @@
       (data.host_links || []).forEach((hl) => {
         const srcAlias = getHostAlias((hl.host_id || '').replace(/^host:/, ''));
         const dstAlias = getSwitchAlias(hl.switch_dpid);
-        const hoverLabel = `${srcAlias}-${dstAlias}`;
+        // Show ports for both host and switch
+        const hostPort = hl.host_port || 'eth0'; // fallback if not provided
+        const switchPort = hl.switch_port;
+        const hoverLabel = `${srcAlias}:${hostPort}-${dstAlias}:${switchPort}`;
         const edgeId = `hostlink:${hl.host_id}||${hl.switch_dpid}:${hl.switch_port}`;
 
         edgesById.set(edgeId, {
