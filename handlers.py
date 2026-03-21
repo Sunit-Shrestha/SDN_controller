@@ -7,7 +7,7 @@ import topology
 import struct
 import threading
 
-LLDP_INTERVAL = 1
+LLDP_INTERVAL = 2
 
 
 switches    = {}
