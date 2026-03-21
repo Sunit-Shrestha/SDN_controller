@@ -173,6 +173,23 @@ def handle_switch_connection(connection, address):
     utils.release_send_lock(connection)
     if formatted_dpid and switches.get(formatted_dpid) is connection:
         switches.pop(formatted_dpid, None)
+        # Cleanup learned state for this switch so stale hosts do not remain
+        mac_to_port.pop(formatted_dpid, None)
+        _pending_ports.pop(formatted_dpid, None)
+
+        # Remove tracked flows that involve this disconnected switch
+        stale_flow_keys = []
+        for flow_key, flow_info in active_flows.items():
+            if flow_info.get('dst_dpid') == formatted_dpid:
+                stale_flow_keys.append(flow_key)
+                continue
+            for hop_dpid, _hop_port in flow_info.get('path', []):
+                if hop_dpid == formatted_dpid:
+                    stale_flow_keys.append(flow_key)
+                    break
+        for flow_key in stale_flow_keys:
+            active_flows.pop(flow_key, None)
+
         topology.deregister_switch(formatted_dpid)
     print(f"Switch {address} disconnected")
 
@@ -184,8 +201,8 @@ def handle_features_reply(connection, body_data, address, switches, mac_to_port,
 
     switches[formatted_dpid] = connection
 
-    if formatted_dpid not in mac_to_port:
-        mac_to_port[formatted_dpid] = {}
+    # Reset learning table on every (re)connect to avoid stale host entries
+    mac_to_port[formatted_dpid] = {}
 
     print(f"Handshake Complete! Registered Switch DPID: {formatted_dpid} for {address}")
 

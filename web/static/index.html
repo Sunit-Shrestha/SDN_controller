@@ -20,6 +20,7 @@
       container: document.getElementById('cy'),
       style: [
         { selector: 'node', style: { 'label': 'data(label)', 'background-color': '#0074D9', 'color': '#fff', 'text-valign': 'center', 'text-halign': 'center', 'width': 40, 'height': 40 } },
+        { selector: 'node.host', style: { 'background-color': '#2ecc71', 'shape': 'round-rectangle', 'width': 44, 'height': 30 } },
         { selector: 'edge', style: { 'width': 2, 'line-color': '#aaa', 'target-arrow-shape': 'triangle', 'curve-style': 'bezier' } },
         { selector: 'edge.undirected', style: { 'target-arrow-shape': 'none', 'line-style': 'solid' } }
       ],
@@ -50,6 +51,17 @@
         return `s${num}`;
       }
       return dpid;
+    }
+
+    // Stable host aliases by learned MAC
+    const hostAliases = new Map();
+    let hostCounter = 1;
+
+    function getHostAlias(mac) {
+      if (!hostAliases.has(mac)) {
+        hostAliases.set(mac, `h${hostCounter++}`);
+      }
+      return hostAliases.get(mac);
     }
 
     function placeTooltip(event) {
@@ -114,6 +126,19 @@
         });
       });
 
+      // Host nodes from learned MAC table
+      (data.hosts || []).forEach((h) => {
+        nodesById.set(h.id, {
+          group: 'nodes',
+          data: {
+            id: h.id,
+            label: getHostAlias(h.mac),
+            mac: h.mac
+          },
+          classes: 'host'
+        });
+      });
+
       // Deduplicate bidirectional links (A->B and B->A shown once)
       const seenPairs = new Set();
       data.links.forEach((l) => {
@@ -147,6 +172,25 @@
             hoverLabel
           },
           classes: isBidirectional ? 'undirected' : ''
+        });
+      });
+
+      // Host-to-switch attachment edges
+      (data.host_links || []).forEach((hl) => {
+        const srcAlias = getHostAlias((hl.host_id || '').replace(/^host:/, ''));
+        const dstAlias = getSwitchAlias(hl.switch_dpid);
+        const hoverLabel = `${srcAlias}-${dstAlias}`;
+        const edgeId = `hostlink:${hl.host_id}||${hl.switch_dpid}:${hl.switch_port}`;
+
+        edgesById.set(edgeId, {
+          group: 'edges',
+          data: {
+            id: edgeId,
+            source: hl.host_id,
+            target: hl.switch_dpid,
+            hoverLabel
+          },
+          classes: 'undirected'
         });
       });
 
@@ -206,9 +250,15 @@
     ws.onmessage = (event) => {
       const data = JSON.parse(event.data);
       if (data.switches.length > 0) {
-        statusEl.textContent = `Switches: ${data.switches.length} | Links: ${data.links.length}`;
+        statusEl.textContent = `Switches: ${data.switches.length} | Hosts: ${(data.hosts || []).length} | Links: ${data.links.length}`;
       } else {
         statusEl.textContent = 'Connected (Waiting for Mininet to start...)';
+      }
+
+      // --- Reset host aliases if all hosts are gone ---
+      if ((data.hosts || []).length === 0) {
+        hostAliases.clear();
+        hostCounter = 1;
       }
 
       // Check if topology actually changed before re-rendering
