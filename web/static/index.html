@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>SDN Topology Visualization</title>
+  <script src="https://unpkg.com/cytoscape/dist/cytoscape.min.js"></script>
+  <style>
+    body { margin: 0; padding: 0; overflow: hidden; font-family: sans-serif; background: #fafafa; }
+    #cy { width: 100vw; height: 100vh; display: block; }
+    #status { position: absolute; top: 10px; left: 10px; z-index: 10; padding: 10px; background: rgba(255,255,255,0.9); border-radius: 4px; box-shadow: 0 0 5px rgba(0,0,0,0.2); }
+  </style>
+</head>
+<body>
+  <div id="status">Connecting...</div>
+  <div id="cy"></div>
+  <script>
+    // Initialize empty Cytoscape instance
+    const cy = cytoscape({
+      container: document.getElementById('cy'),
+      style: [
+        { selector: 'node', style: { 'label': 'data(label)', 'background-color': '#0074D9', 'color': '#fff', 'text-valign': 'center', 'text-halign': 'center', 'width': 40, 'height': 40 } },
+        { selector: 'edge', style: { 'label': 'data(label)', 'width': 2, 'line-color': '#aaa', 'target-arrow-shape': 'triangle', 'curve-style': 'bezier', 'font-size': '10px', 'text-margin-y': -10 } }
+      ],
+      layout: { name: 'cose' }
+    });
+
+    const statusEl = document.getElementById('status');
+    const ws = new WebSocket(`ws://${location.host}/ws/topology`);
+
+    ws.onopen = () => statusEl.textContent = 'Connected (Waiting for Mininet)';
+    ws.onclose = () => statusEl.textContent = 'Disconnected from Server';
+    
+    // Keep track of the nodes and edges so we don't redraw if nothing changed
+    let lastTopologyString = "";
+
+    ws.onmessage = (event) => {
+      const data = JSON.parse(event.data);
+      if (data.switches.length > 0) {
+        statusEl.textContent = `Switches: ${data.switches.length} | Links: ${data.links.length}`;
+      } else {
+        statusEl.textContent = 'Connected (Waiting for Mininet to start...)';
+      }
+
+      // Check if topology actually changed before re-rendering
+      const currentTopologyString = JSON.stringify(data);
+      if (currentTopologyString === lastTopologyString) {
+          return; // No changes, do nothing.
+      }
+      lastTopologyString = currentTopologyString;
+
+      // Prepare new elements
+      const elements = [];
+      data.switches.forEach(s => elements.push({ group: 'nodes', data: { id: s, label: `S-${s}` } }));
+      data.links.forEach(l => elements.push({
+        group: 'edges',
+        data: {
+          id: `${l.src_dpid}:${l.src_port}->${l.dst_dpid}:${l.dst_port}`,
+          source: l.src_dpid,
+          target: l.dst_dpid,
+          label: `p${l.src_port} → p${l.dst_port}`
+        }
+      }));
+
+      // Update Cytoscape elements smoothly
+      cy.elements().remove();
+      cy.add(elements);
+      cy.layout({ name: 'cose', animate: true, animationDuration: 300 }).run();
+    };
+
+    // Note: If you have an existing fetchTopology/setInterval left over from the very first setup, it's removed now.
+  </script>
+</body>
+</html>

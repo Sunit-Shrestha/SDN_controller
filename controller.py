@@ -2,7 +2,7 @@ import socket
 import _thread
 from handlers import handle_switch_connection, start_lldp_sender
 
-if __name__ == "__main__":
+def start_controller():
     # localhost
     HOST = "127.0.0.1"
     # default port in mininet for controller to listen to
@@ -33,3 +33,6 @@ if __name__ == "__main__":
         connection, client = server_socket.accept()
         # #new instance for new thread
         _thread.start_new_thread(handle_switch_connection, (connection, client))
+
+if __name__ == "__main__":
+    start_controller()
