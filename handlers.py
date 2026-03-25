@@ -177,20 +177,12 @@ def handle_switch_connection(connection, address):
         mac_to_port.pop(formatted_dpid, None)
         _pending_ports.pop(formatted_dpid, None)
 
-        # Remove tracked flows that involve this disconnected switch
-        stale_flow_keys = []
-        for flow_key, flow_info in active_flows.items():
-            if flow_info.get('dst_dpid') == formatted_dpid:
-                stale_flow_keys.append(flow_key)
-                continue
-            for hop_dpid, _hop_port in flow_info.get('path', []):
-                if hop_dpid == formatted_dpid:
-                    stale_flow_keys.append(flow_key)
-                    break
-        for flow_key in stale_flow_keys:
-            active_flows.pop(flow_key, None)
-
-        topology.deregister_switch(formatted_dpid)
+        # Remove switch from topology and trigger reroute for all affected flows.
+        # This also clears stale rules on surviving switches for paths that
+        # previously traversed the disconnected switch.
+        removed_links = topology.deregister_switch(formatted_dpid)
+        if removed_links:
+            _reroute_affected_flows(removed_links, reason="switch-disconnect")
     print(f"Switch {address} disconnected")
 
 

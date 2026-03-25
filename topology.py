@@ -171,11 +171,14 @@ def get_host_ports(dpid: str) -> set:
     return all_ports - get_switch_link_ports(dpid)
 
 
-def deregister_switch(dpid: str):
+def deregister_switch(dpid: str) -> list:
     """
     Remove all topology state for a switch that has disconnected.
     Called from handlers.py when the switch's TCP connection is closed.
+    Returns removed directed links as
+    (src_dpid, src_port, dst_dpid, dst_port).
     """
+    removed = []
     with _lock:
         port_map.pop(dpid, None)
         stale = []
@@ -185,7 +188,10 @@ def deregister_switch(dpid: str):
             if src_dpid == dpid or dst_dpid == dpid:
                 stale.append(key)
         for k in stale:
+            dst_dpid, dst_port = links[k]['dst']
+            removed.append((k[0], k[1], dst_dpid, dst_port))
             del links[k]
+    return removed
 
 
 # ------------------------------------------------------------------ #
