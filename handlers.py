@@ -288,10 +288,11 @@ def handle_packet_in(connection, body_data, formatted_dpid, mac_to_port, xid):
                     
                     # Calculate dynamic cost (latency in ms)
                     cost = 1
-                    if ts is not None:
-                        latency = (time.time() - ts) * 1000  # convert to ms
-                        # Make sure cost is at least 1, since Dijkstra requires positive weights
-                        cost = max(1, int(latency))
+                    # DISABLED for manual testing:
+                    # if ts is not None:
+                    #     latency = (time.time() - ts) * 1000  # convert to ms
+                    #     # Make sure cost is at least 1, since Dijkstra requires positive weights
+                    #     cost = max(1, int(latency))
                         
                     # Add only observed direction
                     topology.add_link(src_dpid, src_port, formatted_dpid, in_port, cost=cost)

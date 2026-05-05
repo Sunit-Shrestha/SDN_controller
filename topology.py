@@ -21,6 +21,18 @@ HARDCODED_LINK_COSTS = {
     #       ('2', '1'): 10,
 }
 
+def set_hardcoded_cost(src_dpid: str, dst_dpid: str, cost: int):
+    """Manually update the cost of a link bidirectionally for testing purposes."""
+    with _lock:
+        HARDCODED_LINK_COSTS[(src_dpid, dst_dpid)] = cost
+        HARDCODED_LINK_COSTS[(dst_dpid, src_dpid)] = cost
+        
+        # Also update existing tracked links
+        for (s_dpid, s_port), info in links.items():
+            d_dpid, _ = info['dst']
+            if (s_dpid == src_dpid and d_dpid == dst_dpid) or (s_dpid == dst_dpid and d_dpid == src_dpid):
+                info['cost'] = cost
+
 def remove_stale_links(timeout: float):
     """
     Remove links that have not been seen within the given timeout (in seconds).

@@ -1,7 +1,7 @@
-from fastapi import FastAPI, WebSocket
+from fastapi import FastAPI, WebSocket, Query
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from fastapi import Query
+from pydantic import BaseModel
 import threading
 import sys
 import os
@@ -192,6 +192,16 @@ def get_flows():
                 "dst_port": v.get('dst_port')
             })
     return {"flows": flows}
+
+class LinkCostUpdate(BaseModel):
+    src_dpid: str
+    dst_dpid: str
+    cost: int
+
+@app.post("/api/link_cost")
+def update_link_cost(data: LinkCostUpdate):
+    topology.set_hardcoded_cost(data.src_dpid, data.dst_dpid, data.cost)
+    return {"status": "ok"}
 
 @app.websocket("/ws/topology")
 async def websocket_topology(websocket: WebSocket):
