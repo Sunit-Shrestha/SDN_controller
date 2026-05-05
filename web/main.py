@@ -87,11 +87,14 @@ def get_topology():
     host_links = []
     if hasattr(topology, 'get_all_links'):
         for l in topology.get_all_links():
+            # l format: (src_dpid, src_port, dst_dpid, dst_port, last_seen, cost)
+            cost = l[5] if len(l) > 5 else 1
             links.append({
                 "src_dpid": l[0],
                 "src_port": l[1],
                 "dst_dpid": l[2],
-                "dst_port": l[3]
+                "dst_port": l[3],
+                "cost": cost
             })
 
     active_switches = set(switches)
@@ -202,11 +205,13 @@ async def websocket_topology(websocket: WebSocket):
         host_links = []
         if hasattr(topology, 'get_all_links'):
             for l in topology.get_all_links():
+                cost = l[5] if len(l) > 5 else 1
                 links.append({
                     "src_dpid": l[0],
                     "src_port": l[1],
                     "dst_dpid": l[2],
-                    "dst_port": l[3]
+                    "dst_port": l[3],
+                    "cost": cost
                 })
 
         active_switches = set(switches)
@@ -231,4 +236,4 @@ async def websocket_topology(websocket: WebSocket):
                     })
 
         await websocket.send_json({"switches": switches, "links": links, "hosts": hosts, "host_links": host_links})
-        await asyncio.sleep(2)
+        await asyncio.sleep(1000)

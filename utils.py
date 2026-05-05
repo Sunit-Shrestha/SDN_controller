@@ -248,12 +248,15 @@ def send_port_desc_request(connection, xid: int):
     locked_send(connection, header.pack() + body)
 
 
+import time
+
 def send_lldp_out(connection, dpid_int: int, port_no: int, xid: int):
     """
     Send an LLDP frame out of a specific port on a switch via PACKET_OUT.
     The switch will forward the raw Ethernet frame out of port_no.
     """
-    lldp_frame = LLDPPacket.create(dpid_int, port_no).pack()
+    # Embed current time into the LLDP packet for dynamic cost (latency) estimation
+    lldp_frame = LLDPPacket.create(dpid_int, port_no, ts=time.time()).pack()
 
     action_to_send = OFPActionOut(
         type=ofc.OFPAT.OUTPUT, len=16, port=port_no, max_len=0xFFFF

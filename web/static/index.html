@@ -22,7 +22,7 @@
         { selector: 'node', style: { 'label': 'data(label)', 'background-color': '#0074D9', 'color': '#fff', 'text-valign': 'center', 'text-halign': 'center', 'width': 40, 'height': 40 } },
         { selector: 'node.host', style: { 'background-color': '#2ecc71', 'shape': 'round-rectangle', 'width': 44, 'height': 30 } },
         { selector: 'node.selected-device', style: { 'border-width': 4, 'border-color': '#ff9800', 'overlay-opacity': 0, 'z-index': 999 } },
-        { selector: 'edge', style: { 'width': 2, 'line-color': '#aaa', 'target-arrow-shape': 'triangle', 'curve-style': 'bezier' } },
+        { selector: 'edge', style: { 'label': 'data(cost_label)', 'text-rotation': 'autorotate', 'text-margin-y': -10, 'font-size': '12px', 'color': '#555', 'width': 2, 'line-color': '#aaa', 'target-arrow-shape': 'triangle', 'curve-style': 'bezier' } },
         { selector: 'edge.undirected', style: { 'target-arrow-shape': 'none', 'line-style': 'solid' } },
         { selector: 'edge.path-highlight', style: { 'line-color': '#ff5722', 'width': 5, 'z-index': 999 } }
       ],
@@ -234,11 +234,26 @@
         const dstAlias = getSwitchAlias(l.dst_dpid);
         const srcPort = l.src_port;
         const dstPort = l.dst_port;
-        const label1 = `${srcAlias}:${srcPort}-${dstAlias}:${dstPort}`;
-        const label2 = `${dstAlias}:${dstPort}-${srcAlias}:${srcPort}`;
+        
+        // Find reverse link to check if cost is asymmetric
+        const reverseLink = data.links.find(other => 
+          other.src_dpid === l.dst_dpid && other.src_port === l.dst_port &&
+          other.dst_dpid === l.src_dpid && other.dst_port === l.src_port
+        );
+        const fwdCost = l.cost !== undefined ? l.cost : 1;
+        const revCost = (reverseLink && reverseLink.cost !== undefined) ? reverseLink.cost : 1;
+        
+        let costLabel = fwdCost.toString();
+        if (isBidirectional && fwdCost !== revCost) {
+            // Display both costs if they are asymmetric (e.g. "1 / 5")
+            costLabel = `${fwdCost} / ${revCost}`;
+        }
+        
+        const label1 = `${srcAlias}:${srcPort}-${dstAlias}:${dstPort} (cost: ${fwdCost})`;
+        const label2 = `${dstAlias}:${dstPort}-${srcAlias}:${srcPort} (cost: ${revCost})`;
         const hoverLabel = [label1, label2]
           .sort((x, y) => x.localeCompare(y, undefined, { numeric: true }))
-          .at(0);
+          .join('\n');
 
         // Stable edge id for the same physical pair, regardless of message direction order
         const edgeId = `link:${pairKey}`;
@@ -248,7 +263,9 @@
             id: edgeId,
             source: l.src_dpid,
             target: l.dst_dpid,
-            hoverLabel
+            hoverLabel: hoverLabel,
+            cost_label: costLabel,
+            cost: fwdCost
           },
           classes: isBidirectional ? 'undirected' : ''
         });

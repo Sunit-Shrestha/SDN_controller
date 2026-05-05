@@ -7,7 +7,9 @@ import topology
 import struct
 import threading
 
-LLDP_INTERVAL = 2
+import time
+
+LLDP_INTERVAL = 1000
 
 
 switches    = {}
@@ -75,6 +77,43 @@ def _reroute_affected_flows(removed_links: list, reason: str):
             active_flows[flow_key]['path'] = list(new_path)
             print(f"[REROUTE] Flow {src_mac.hex(':')}->{dst_mac.hex(':')} rerouted.")
 
+def _check_for_better_paths():
+    """Periodically checks if a cheaper path is available for active flows."""
+    for flow_key, flow_info in list(active_flows.items()):
+        src_mac, dst_mac = flow_key
+        dst_dpid = flow_info['dst_dpid']
+        dst_port = flow_info['dst_port']
+        current_path = flow_info['path']
+        
+        if not current_path: continue
+        
+        src_dpid = current_path[0][0]
+        new_path = topology.find_path(src_dpid, dst_dpid)
+        
+        # If a path exists and it's structurally different from the current path
+        if new_path and new_path != current_path:
+            # To avoid flapping, you might want to compare total costs, but for now we just reroute
+            print(f"[OPTIMIZATION] Better path found for {src_mac.hex(':')}->{dst_mac.hex(':')}, rerouting...")
+            
+            # Remove old flow rules
+            for hop_dpid, _ in current_path:
+                hop_conn = switches.get(hop_dpid)
+                if hop_conn:
+                    utils.remove_mac_flow(hop_conn, dst_mac)
+            dst_conn = switches.get(dst_dpid)
+            if dst_conn:
+                utils.remove_mac_flow(dst_conn, dst_mac)
+                
+            # Install new flow rules
+            for hop_dpid, hop_out_port in new_path:
+                hop_conn = switches.get(hop_dpid)
+                if hop_conn:
+                    utils.install_mac_flow(hop_conn, dst_mac, hop_out_port, xid=0)
+            dst_conn = switches.get(dst_dpid)
+            if dst_conn:
+                utils.install_mac_flow(dst_conn, dst_mac, dst_port, xid=0)
+                
+            active_flows[flow_key]['path'] = list(new_path)
 
 def _lldp_sender_loop():
     stop = threading.Event()
@@ -99,9 +138,12 @@ def _lldp_sender_loop():
         removed_links = topology.remove_stale_links(LINK_TIMEOUT)
         if removed_links:
             _reroute_affected_flows(removed_links, reason="lldp-timeout")
+            
+        # Check if newer, cheaper paths are available for current flows
+        _check_for_better_paths()
 
         # Print topology if changed
-        current_links = set((l[0], l[1], l[2], l[3]) for l in topology.get_all_links())
+        current_links = set((l[0], l[1], l[2], l[3], l[5] if len(l)>5 else 1) for l in topology.get_all_links())
         if current_links and (not prev_links or current_links != prev_links):
             topology.print_topology()
             prev_links = current_links
@@ -240,10 +282,19 @@ def handle_packet_in(connection, body_data, formatted_dpid, mac_to_port, xid):
             if lldp_pkt:
                 src_mac  = lldp_pkt.get_chassis_mac()
                 src_port = lldp_pkt.get_port_number()
+                ts       = lldp_pkt.get_timestamp()
                 if src_mac and src_port is not None and in_port is not None:
                     src_dpid = '00:00:' + ':'.join(f'{b:02x}' for b in src_mac)
+                    
+                    # Calculate dynamic cost (latency in ms)
+                    cost = 1
+                    if ts is not None:
+                        latency = (time.time() - ts) * 1000  # convert to ms
+                        # Make sure cost is at least 1, since Dijkstra requires positive weights
+                        cost = max(1, int(latency))
+                        
                     # Add only observed direction
-                    topology.add_link(src_dpid, src_port, formatted_dpid, in_port)
+                    topology.add_link(src_dpid, src_port, formatted_dpid, in_port, cost=cost)
             return
 
     if in_port is None:

@@ -103,6 +103,14 @@ class LLDPTlv:
         )
 
     @classmethod
+    def timestamp(cls, ts: float) -> "LLDPTlv":
+        """Create a custom Organizationally Specific TLV (type 127) for timestamp."""
+        # Type 127, value: OUI (3 bytes) + subtype (1 byte) + timestamp (8 bytes double)
+        # Using fake OUI b'\x00\x00\x00', subtype 0x01
+        value = b'\x00\x00\x00' + b'\x01' + struct.pack("!d", ts)
+        return cls(tlv_type=127, value=value)
+
+    @classmethod
     def end(cls) -> "LLDPTlv":
         """Create an End-of-LLDPDU TLV."""
         return cls(tlv_type=LLDP_TLV_TYPE.END, value=b"")
@@ -110,6 +118,12 @@ class LLDPTlv:
     # ------------------------------------------------------------------ #
     # Convenience decoders                                                 #
     # ------------------------------------------------------------------ #
+
+    def get_timestamp(self) -> Optional[float]:
+        """Extract timestamp if this is our custom timestamp TLV."""
+        if self.tlv_type == 127 and len(self.value) == 12 and self.value[:4] == b'\x00\x00\x00\x01':
+            return struct.unpack("!d", self.value[4:12])[0]
+        return None
 
     def get_chassis_mac(self) -> Optional[bytes]:
         """
@@ -221,12 +235,13 @@ class LLDPPacket:
     # Convenience constructors                                             
 
     @classmethod
-    def create(cls, dpid_int: int, port_no: int, ttl: int = 120) -> "LLDPPacket":
+    def create(cls, dpid_int: int, port_no: int, ttl: int = 120, ts: Optional[float] = None) -> "LLDPPacket":
         """
-        Build a standard LLDP discovery packet.
+        Build a standard LLDP discovery packet with an optional timestamp.
         :param dpid_int: Switch DPID as an integer
         :param port_no : Port number the LLDP will be sent out of
         :param ttl     : TTL in seconds (default 120)
+        :param ts      : Optional float timestamp to embed
         """
         src_mac = dpid_int.to_bytes(8, byteorder='big')[2:8]
 
@@ -234,8 +249,11 @@ class LLDPPacket:
             LLDPTlv.chassis_id_mac(src_mac),
             LLDPTlv.port_id_port_component(port_no),
             LLDPTlv.ttl(ttl),
-            LLDPTlv.end(),
         ]
+        if ts is not None:
+            tlvs.append(LLDPTlv.timestamp(ts))
+            
+        tlvs.append(LLDPTlv.end())
         return cls(dst_mac=LLDP_MAC_NEAREST_BRIDGE, src_mac=src_mac, tlvs=tlvs)
 
     # Lookup helpers                                                 
@@ -258,3 +276,7 @@ class LLDPPacket:
     def get_ttl(self) -> Optional[int]:
         tlv = self.get_tlv(LLDP_TLV_TYPE.TTL)
         return tlv.get_ttl() if tlv else None
+        
+    def get_timestamp(self) -> Optional[float]:
+        tlv = self.get_tlv(127) # Our custom timestamp TLV type
+        return tlv.get_timestamp() if tlv else None
