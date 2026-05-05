@@ -18,12 +18,14 @@ class OFPMultipartRequest:
     H = uint16_t (2 bytes) -> flags  (0 for a single request)
     4x = 4 bytes padding
 
-    Total body size = 8 bytes
+    Total body size = 8 bytes, plus optional request body.
     For PORT_DESC there is no additional request body.
+    For PORT_STATS, append a 8-byte port selector body.
     """
 
     type:  int
     flags: int = 0
+    body: bytes = b""
 
     STRUCT_FMT  = "!HH4x"
     STRUCT_SIZE = struct.calcsize(STRUCT_FMT)  # 8
@@ -34,7 +36,7 @@ class OFPMultipartRequest:
         return cls(type=type_, flags=flags)
 
     def pack(self) -> bytes:
-        return struct.pack(self.STRUCT_FMT, self.type, self.flags)
+        return struct.pack(self.STRUCT_FMT, self.type, self.flags) + self.body
 
 
 # ------------------------------------------------------------------ #
@@ -121,6 +123,56 @@ class OFPPort:
 
 
 # ------------------------------------------------------------------ #
+# OFPPortStats  (one entry inside a PORT_STATS reply body)            #
+# ------------------------------------------------------------------ #
+
+@dataclass
+class OFPPortStats:
+    """
+    OpenFlow 1.3 Port Statistics.
+
+    Format: !I4xQQQQQQQQQQQQII (112 bytes)
+    """
+
+    port_no:       int
+    rx_packets:    int
+    tx_packets:    int
+    rx_bytes:      int
+    tx_bytes:      int
+    rx_dropped:    int
+    tx_dropped:    int
+    rx_errors:     int
+    tx_errors:     int
+    rx_frame_err:  int
+    rx_over_err:   int
+    rx_crc_err:    int
+    collisions:    int
+    duration_sec:  int
+    duration_nsec: int
+
+    STRUCT_FMT  = "!I4xQQQQQQQQQQQQII"
+    STRUCT_SIZE = struct.calcsize(STRUCT_FMT)  # 112
+
+    @classmethod
+    def parse(cls, data: bytes) -> "OFPPortStats":
+        (
+            port_no, rx_packets, tx_packets, rx_bytes, tx_bytes,
+            rx_dropped, tx_dropped, rx_errors, tx_errors,
+            rx_frame_err, rx_over_err, rx_crc_err, collisions,
+            duration_sec, duration_nsec
+        ) = struct.unpack(cls.STRUCT_FMT, data[:cls.STRUCT_SIZE])
+
+        return cls(
+            port_no=port_no, rx_packets=rx_packets, tx_packets=tx_packets,
+            rx_bytes=rx_bytes, tx_bytes=tx_bytes, rx_dropped=rx_dropped,
+            tx_dropped=tx_dropped, rx_errors=rx_errors, tx_errors=tx_errors,
+            rx_frame_err=rx_frame_err, rx_over_err=rx_over_err,
+            rx_crc_err=rx_crc_err, collisions=collisions,
+            duration_sec=duration_sec, duration_nsec=duration_nsec
+        )
+
+
+# ------------------------------------------------------------------ #
 # OFPMultipartReply                                                    #
 # ------------------------------------------------------------------ #
 
@@ -138,6 +190,7 @@ class OFPMultipartReply:
     type:  int
     flags: int
     ports: List[OFPPort] = field(default_factory=list)
+    port_stats: List[OFPPortStats] = field(default_factory=list)
 
     STRUCT_FMT  = "!HH4x"
     STRUCT_SIZE = struct.calcsize(STRUCT_FMT)  # 8
@@ -150,15 +203,21 @@ class OFPMultipartReply:
         type_, flags = struct.unpack(cls.STRUCT_FMT, data[:cls.STRUCT_SIZE])
 
         ports = []
+        port_stats = []
         offset = cls.STRUCT_SIZE
 
-        # Parse the body as an array of OFPPort entries (64 bytes each)
-        while offset + OFPPort.STRUCT_SIZE <= len(data):
-            port = OFPPort.parse(data[offset:])
-            ports.append(port)
-            offset += OFPPort.STRUCT_SIZE
+        if type_ == 13:  # PORT_DESC
+            while offset + OFPPort.STRUCT_SIZE <= len(data):
+                port = OFPPort.parse(data[offset:offset+OFPPort.STRUCT_SIZE])
+                ports.append(port)
+                offset += OFPPort.STRUCT_SIZE
+        elif type_ == 4:  # PORT_STATS
+            while offset + OFPPortStats.STRUCT_SIZE <= len(data):
+                stat = OFPPortStats.parse(data[offset:offset+OFPPortStats.STRUCT_SIZE])
+                port_stats.append(stat)
+                offset += OFPPortStats.STRUCT_SIZE
 
-        return cls(type=type_, flags=flags, ports=ports)
+        return cls(type=type_, flags=flags, ports=ports, port_stats=port_stats)
 
     @property
     def has_more(self) -> bool:

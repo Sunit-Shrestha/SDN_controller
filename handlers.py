@@ -13,11 +13,25 @@ import time
 # LLDP intervals are usually 3 to 10 seconds. 5 seconds is a good default 
 # that prevents controller flooding while keeping pathfinding responsive.
 LLDP_INTERVAL = 5
+STATS_INTERVAL = 5
+
+# Composite cost weights (tunable).
+ALPHA = 1.0   # latency weight
+BETA = 1.0    # bandwidth weight
+GAMMA = 1.0   # loss weight
+
+# Default link capacity in bps (used when port speed is unknown).
+DEFAULT_LINK_CAPACITY_BPS = 1_000_000_000
+
+# Reroute only if the new path improves cost by at least this ratio.
+COST_IMPROVEMENT_THRESHOLD = 0.20
 
 
 switches    = {}
 mac_to_port = {}
 _pending_ports = {}
+_pending_port_speeds = {}
+_port_stats_state = {}
 
 # Track active flows: (src_mac, dst_mac) -> {'path': [(dpid, out_port), ...], 'dst_dpid': str, 'dst_port': int}
 active_flows = {}
@@ -27,6 +41,51 @@ def start_lldp_sender():
     t = threading.Thread(target=_lldp_sender_loop, daemon=True, name="lldp-sender")
     t.start()
     print(f"[LLDP] Periodic sender started (interval={LLDP_INTERVAL}s)")
+
+
+def start_stats_sender():
+    t = threading.Thread(target=_stats_sender_loop, daemon=True, name="stats-sender")
+    t.start()
+    print(f"[STATS] Periodic sender started (interval={STATS_INTERVAL}s)")
+
+
+def _get_port_metrics(dpid: str, port_no: int) -> tuple:
+    port_stats = _port_stats_state.get(dpid, {}).get(port_no)
+    if not port_stats:
+        return None, None
+    return port_stats.get('available_bps'), port_stats.get('loss')
+
+
+def _compute_link_cost(latency_ms: float, capacity_bps: float, available_bps: float, loss: float) -> float:
+    if latency_ms is None:
+        latency_ms = 1.0
+    if capacity_bps <= 0:
+        capacity_bps = DEFAULT_LINK_CAPACITY_BPS
+    if available_bps is None or available_bps <= 0:
+        available_bps = max(1.0, capacity_bps)
+    if loss is None:
+        loss = 0.0
+    return (ALPHA * latency_ms) + (BETA * (capacity_bps / available_bps)) + (GAMMA * loss)
+
+
+def _recompute_link_cost(src_dpid: str, src_port: int, latency_ms: float = None,
+                          available_bps: float = None, loss: float = None):
+    info = topology.get_link_info(src_dpid, src_port)
+    if not info:
+        return
+    latency_ms = latency_ms if latency_ms is not None else info.get('latency_ms')
+    available_bps = available_bps if available_bps is not None else info.get('bandwidth_bps')
+    loss = loss if loss is not None else info.get('loss')
+    capacity_bps = topology.get_port_speed(src_dpid, src_port) or DEFAULT_LINK_CAPACITY_BPS
+    cost = _compute_link_cost(latency_ms, capacity_bps, available_bps, loss)
+    topology.update_link_metrics(
+        src_dpid=src_dpid,
+        src_port=src_port,
+        cost=cost,
+        latency_ms=latency_ms,
+        bandwidth_bps=available_bps,
+        loss=loss,
+    )
 
 
 def _reroute_affected_flows(removed_links: list, reason: str):
@@ -95,7 +154,10 @@ def _check_for_better_paths():
         
         # If a path exists and it's structurally different from the current path
         if new_path and new_path != current_path:
-            # To avoid flapping, you might want to compare total costs, but for now we just reroute
+            current_cost = _path_cost(current_path)
+            new_cost = _path_cost(new_path)
+            if new_cost >= current_cost * (1.0 - COST_IMPROVEMENT_THRESHOLD):
+                continue
             print(f"[OPTIMIZATION] Better path found for {src_mac.hex(':')}->{dst_mac.hex(':')}, rerouting...")
             
             # Remove old flow rules
@@ -117,6 +179,17 @@ def _check_for_better_paths():
                 utils.install_mac_flow(dst_conn, dst_mac, dst_port, xid=0)
                 
             active_flows[flow_key]['path'] = list(new_path)
+
+
+def _path_cost(path: list) -> float:
+    total = 0.0
+    for hop_dpid, hop_out_port in path:
+        info = topology.get_link_info(hop_dpid, hop_out_port)
+        if not info:
+            total += 1.0
+            continue
+        total += float(info.get('cost', 1.0))
+    return total
 
 def _lldp_sender_loop():
     stop = threading.Event()
@@ -150,6 +223,16 @@ def _lldp_sender_loop():
         if current_links and (not prev_links or current_links != prev_links):
             topology.print_topology()
             prev_links = current_links
+
+
+def _stats_sender_loop():
+    stop = threading.Event()
+    while not stop.wait(STATS_INTERVAL):
+        for dpid, connection in list(switches.items()):
+            try:
+                utils.send_port_stats_request(connection, xid=0)
+            except Exception:
+                pass
 
 
 def handle_switch_connection(connection, address):
@@ -251,22 +334,30 @@ def handle_features_reply(connection, body_data, address, switches, mac_to_port,
 
 def handle_multipart_reply(body_data, formatted_dpid, connection, xid):
     reply = OFPMultipartReply.parse(body_data)
+    if reply.type == ofc.OFPMP.PORT_DESC:
+        if formatted_dpid not in _pending_ports:
+            _pending_ports[formatted_dpid] = []
+            _pending_port_speeds[formatted_dpid] = {}
 
-    if formatted_dpid not in _pending_ports:
-        _pending_ports[formatted_dpid] = []
+        for port in reply.ports:
+            if port.port_no < 0xFFFFFF00:
+                _pending_ports[formatted_dpid].append(port.port_no)
+                speed_kbps = port.curr_speed or port.max_speed
+                if speed_kbps:
+                    _pending_port_speeds[formatted_dpid][port.port_no] = int(speed_kbps) * 1000
 
-    for port in reply.ports:
-        if port.port_no < 0xFFFFFF00:
-            _pending_ports[formatted_dpid].append(port.port_no)
+        if not reply.has_more:
+            port_nos = _pending_ports.pop(formatted_dpid, [])
+            port_speeds = _pending_port_speeds.pop(formatted_dpid, {})
+            topology.register_ports(formatted_dpid, port_nos)
+            topology.register_port_speeds(formatted_dpid, port_speeds)
+            print(f"[{formatted_dpid}] Ports discovered: {sorted(port_nos)}")
 
-    if not reply.has_more:
-        port_nos = _pending_ports.pop(formatted_dpid, [])
-        topology.register_ports(formatted_dpid, port_nos)
-        print(f"[{formatted_dpid}] Ports discovered: {sorted(port_nos)}")
-
-        dpid_int = int(formatted_dpid.replace(':', ''), 16)
-        for port_no in port_nos:
-            utils.send_lldp_out(connection, dpid_int, port_no, xid)
+            dpid_int = int(formatted_dpid.replace(':', ''), 16)
+            for port_no in port_nos:
+                utils.send_lldp_out(connection, dpid_int, port_no, xid)
+    elif reply.type == ofc.OFPMP.PORT_STATS:
+        _handle_port_stats_reply(formatted_dpid, reply)
 
 
 def handle_packet_in(connection, body_data, formatted_dpid, mac_to_port, xid):
@@ -290,16 +381,26 @@ def handle_packet_in(connection, body_data, formatted_dpid, mac_to_port, xid):
                     src_dpid = '00:00:' + ':'.join(f'{b:02x}' for b in src_mac)
                     
                     # Calculate dynamic cost (latency in ms)
-                    cost = 1
+                    latency = None
                     if ts is not None:
                         latency = (time.time() - ts) * 1000  # convert to ms
-                        # Make sure cost is at least 1, since Dijkstra requires positive weights
-                        cost = max(1, int(latency))
-                        
-                    # Add only observed direction
-                    topology.add_link(src_dpid, src_port, formatted_dpid, in_port, cost=cost)
-            return
 
+                    available_bps, loss = _get_port_metrics(formatted_dpid, in_port)
+                    capacity_bps = topology.get_port_speed(formatted_dpid, in_port) or DEFAULT_LINK_CAPACITY_BPS
+                    composite_cost = _compute_link_cost(latency, capacity_bps, available_bps, loss)
+
+                    # Add only observed direction
+                    topology.add_link(
+                        src_dpid,
+                        src_port,
+                        formatted_dpid,
+                        in_port,
+                        cost=composite_cost,
+                        latency_ms=latency,
+                        bandwidth_bps=available_bps,
+                        loss=loss,
+                    )
+            return
     if in_port is None:
         in_port = ofc.OFPP.CONTROLLER
 
@@ -412,6 +513,50 @@ def handle_packet_in(connection, body_data, formatted_dpid, mac_to_port, xid):
         xid=xid,
     )
     return
+
+
+def _handle_port_stats_reply(formatted_dpid: str, reply: OFPMultipartReply):
+    now = time.time()
+    dpid_stats = _port_stats_state.setdefault(formatted_dpid, {})
+
+    for stat in reply.port_stats:
+        port_no = stat.port_no
+        if port_no >= 0xFFFFFF00:
+            continue
+
+        prev = dpid_stats.get(port_no)
+        dpid_stats[port_no] = {
+            'tx_bytes': stat.tx_bytes,
+            'tx_packets': stat.tx_packets,
+            'tx_errors': stat.tx_errors,
+            'ts': now,
+        }
+
+        if not prev:
+            continue
+
+        delta_t = now - prev.get('ts', now)
+        if delta_t <= 0:
+            continue
+
+        delta_tx_bytes = max(0, stat.tx_bytes - prev.get('tx_bytes', 0))
+        delta_tx_packets = max(0, stat.tx_packets - prev.get('tx_packets', 0))
+        delta_tx_errors = max(0, stat.tx_errors - prev.get('tx_errors', 0))
+
+        tx_rate_bps = (delta_tx_bytes * 8) / delta_t
+        capacity_bps = topology.get_port_speed(formatted_dpid, port_no) or DEFAULT_LINK_CAPACITY_BPS
+        available_bps = max(1.0, capacity_bps - tx_rate_bps)
+        loss = (delta_tx_errors / max(delta_tx_packets, 1)) if delta_tx_packets > 0 else 0.0
+
+        dpid_stats[port_no]['available_bps'] = available_bps
+        dpid_stats[port_no]['loss'] = loss
+
+        _recompute_link_cost(
+            src_dpid=formatted_dpid,
+            src_port=port_no,
+            available_bps=available_bps,
+            loss=loss,
+        )
 
 
 def handle_port_status(connection, body_data, formatted_dpid):

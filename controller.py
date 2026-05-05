@@ -1,6 +1,6 @@
 import socket
 import _thread
-from handlers import handle_switch_connection, start_lldp_sender
+from handlers import handle_switch_connection, start_lldp_sender, start_stats_sender
 
 def start_controller():
     # localhost
@@ -28,6 +28,7 @@ def start_controller():
 
     # Start background LLDP probe thread
     start_lldp_sender()
+    start_stats_sender()
 
     while True:
         connection, client = server_socket.accept()

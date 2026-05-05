@@ -271,14 +271,14 @@
         const fwdCost = l.cost !== undefined ? l.cost : 1;
         const revCost = (reverseLink && reverseLink.cost !== undefined) ? reverseLink.cost : 1;
         
-        let costLabel = fwdCost.toString();
+        let costLabel = fwdCost.toFixed(1);
         if (isBidirectional && fwdCost !== revCost) {
-            // Display both costs if they are asymmetric (e.g. "1 / 5")
-            costLabel = `${fwdCost} / ${revCost}`;
+            // Display both costs if they are asymmetric (e.g. "1.0 / 5.0")
+            costLabel = `${fwdCost.toFixed(1)} / ${revCost.toFixed(1)}`;
         }
         
-        const label1 = `${srcAlias}:${srcPort}-${dstAlias}:${dstPort} (cost: ${fwdCost})`;
-        const label2 = `${dstAlias}:${dstPort}-${srcAlias}:${srcPort} (cost: ${revCost})`;
+        const label1 = `${srcAlias}:${srcPort}-${dstAlias}:${dstPort} (cost: ${fwdCost.toFixed(1)})`;
+        const label2 = `${dstAlias}:${dstPort}-${srcAlias}:${srcPort} (cost: ${revCost.toFixed(1)})`;
         const hoverLabel = [label1, label2]
           .sort((x, y) => x.localeCompare(y, undefined, { numeric: true }))
           .join('\n');

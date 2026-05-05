@@ -247,6 +247,20 @@ def send_port_desc_request(connection, xid: int):
     )
     locked_send(connection, header.pack() + body)
 
+def send_port_stats_request(connection, xid: int, port_no: int = ofc.OFPP.ANY):
+    """
+    Ask a switch to send back its port statistics (OFPMP_PORT_STATS = 4).
+    """
+    body_payload = struct.pack("!I4x", port_no)
+    body = OFPMultipartRequest(type=ofc.OFPMP.PORT_STATS, flags=0, body=body_payload).pack()
+    header = OFPHeader(
+        version=ofc.OF_VERSION_1_3,
+        message_type=ofc.OFPT.MULTIPART_REQUEST,
+        message_length=OFPHeader.STRUCT_SIZE + len(body),
+        xid=xid,
+    )
+    locked_send(connection, header.pack() + body)
+
 
 import time
 

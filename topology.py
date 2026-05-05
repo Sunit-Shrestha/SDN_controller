@@ -10,7 +10,8 @@ import time
 # _lock      : protects both dicts for thread-safe access (switches run on separate threads)
 
 port_map = {}   # str dpid -> set(int port_no)
-# (src_dpid, src_port) -> {'dst': (dst_dpid, dst_port), 'last_seen': timestamp}
+port_speeds = {}  # str dpid -> dict(int port_no -> int speed_bps)
+# (src_dpid, src_port) -> {'dst': (dst_dpid, dst_port), 'last_seen': timestamp, ...}
 links    = {}
 _lock    = threading.Lock()
 
@@ -61,6 +62,12 @@ def register_ports(dpid: str, port_nos: list):
         port_map[dpid] = set(port_nos)
 
 
+def register_port_speeds(dpid: str, speeds: dict):
+    """Store per-port speed (bps) for a switch."""
+    with _lock:
+        port_speeds[dpid] = dict(speeds)
+
+
 def set_port_live(dpid: str, port_no: int, is_live: bool):
     """Update local port map when a PORT_STATUS event is received."""
     with _lock:
@@ -78,11 +85,26 @@ def get_ports(dpid: str) -> set:
         return set(port_map.get(dpid, set()))
 
 
+def get_port_speed(dpid: str, port_no: int) -> int:
+    """Return port speed in bps, or 0 if unknown."""
+    with _lock:
+        return int(port_speeds.get(dpid, {}).get(port_no, 0))
+
+
 # ------------------------------------------------------------------ #
 # Link Map                                                             #
 # ------------------------------------------------------------------ #
 
-def add_link(src_dpid: str, src_port: int, dst_dpid: str, dst_port: int, cost: int = 1):
+def add_link(
+    src_dpid: str,
+    src_port: int,
+    dst_dpid: str,
+    dst_port: int,
+    cost: int = 1,
+    latency_ms: float = None,
+    bandwidth_bps: float = None,
+    loss: float = None,
+):
     """
     Record a directed link:  (src_dpid, src_port) -> (dst_dpid, dst_port)
     LLDP gives us directed links. Both directions will be added separately
@@ -95,11 +117,47 @@ def add_link(src_dpid: str, src_port: int, dst_dpid: str, dst_port: int, cost: i
         
         # Avoid overwriting custom costs if the link already exists and we just saw an LLDP refresh
         # (Fix: actually update the cost if a new dynamic cost is passed in from handlers)
+        existing = links.get((src_dpid, src_port), {})
         links[(src_dpid, src_port)] = {
             'dst': (dst_dpid, dst_port),
             'last_seen': time.time(),
-            'cost': hardcoded_cost
+            'cost': hardcoded_cost,
+            'latency_ms': latency_ms if latency_ms is not None else existing.get('latency_ms'),
+            'bandwidth_bps': bandwidth_bps if bandwidth_bps is not None else existing.get('bandwidth_bps'),
+            'loss': loss if loss is not None else existing.get('loss'),
         }
+
+
+def get_link_info(src_dpid: str, src_port: int):
+    """Return a copy of the link info dict for a directed link, or None."""
+    with _lock:
+        info = links.get((src_dpid, src_port))
+        if not info:
+            return None
+        return dict(info)
+
+
+def update_link_metrics(
+    src_dpid: str,
+    src_port: int,
+    cost: float = None,
+    latency_ms: float = None,
+    bandwidth_bps: float = None,
+    loss: float = None,
+):
+    """Update metrics for a directed link if it exists."""
+    with _lock:
+        info = links.get((src_dpid, src_port))
+        if not info:
+            return
+        if cost is not None:
+            info['cost'] = cost
+        if latency_ms is not None:
+            info['latency_ms'] = latency_ms
+        if bandwidth_bps is not None:
+            info['bandwidth_bps'] = bandwidth_bps
+        if loss is not None:
+            info['loss'] = loss
 
 
 def remove_links_for_port(dpid: str, port_no: int) -> list:
@@ -207,6 +265,7 @@ def deregister_switch(dpid: str) -> list:
     removed = []
     with _lock:
         port_map.pop(dpid, None)
+        port_speeds.pop(dpid, None)
         stale = []
         for key, info in links.items():
             src_dpid, _ = key

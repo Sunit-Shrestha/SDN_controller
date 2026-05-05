@@ -48,4 +48,5 @@ class OFPIT(IntEnum):
     APPLY_ACTIONS = 4
 
 class OFPMP(IntEnum):
+    PORT_STATS = 4
     PORT_DESC = 13
