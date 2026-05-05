@@ -246,4 +246,6 @@ async def websocket_topology(websocket: WebSocket):
                     })
 
         await websocket.send_json({"switches": switches, "links": links, "hosts": hosts, "host_links": host_links})
-        await asyncio.sleep(1000)
+        # Sync the UI socket refresh closely to the LLDP interval so the UI 
+        # isn't over or under spinning when the backend acquires new state
+        await asyncio.sleep(5)
