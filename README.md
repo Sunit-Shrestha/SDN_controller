@@ -13,3 +13,16 @@ to remove link: link s1 s2 down/up
 to register into iperf : h3x1 iperf -s &
 
 to ping using iperf: h2x3 iperf -c h3x1 -t 20 -b 10G
+
+
+# Interactive CLI with your SDN controller
+sudo python3 advanced_topo.py --controller remote
+
+# Non-interactive pingall test
+sudo python3 advanced_topo.py --controller remote --test pingall
+
+# Custom bandwidth/delay (good for cost variation)
+sudo python3 advanced_topo.py --controller remote --bw 100 --delay 5ms
+
+# Or via mn directly (after placing the file)
+sudo mn --custom advanced_topo.py --topo advft --controller remote,ip=127.0.0.1,port=6653 --switch ovs,protocols=OpenFlow13
