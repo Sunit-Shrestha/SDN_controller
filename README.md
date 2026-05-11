@@ -9,3 +9,7 @@ to watch packet: tcpdump -i s1-eth1 -n -e not ether proto 0x88cc
 to watch flowrules: sh ovs-ofctl -O OpenFlow13 dump-flows s1x1
 
 to remove link: link s1 s2 down/up
+
+to register into iperf : h3x1 iperf -s &
+
+to ping using iperf: h2x3 iperf -c h3x1 -t 20 -b 10G
