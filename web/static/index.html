@@ -270,18 +270,23 @@
         );
         const fwdCost = l.cost !== undefined ? l.cost : 1;
         const revCost = (reverseLink && reverseLink.cost !== undefined) ? reverseLink.cost : 1;
-        
-        let costLabel = fwdCost.toFixed(1);
-        if (isBidirectional && fwdCost !== revCost) {
-            // Display both costs if they are asymmetric (e.g. "1.0 / 5.0")
-            costLabel = `${fwdCost.toFixed(1)} / ${revCost.toFixed(1)}`;
+
+        const hasReverse = Boolean(reverseLink);
+        let displayCost = fwdCost;
+        let hoverCostLabel = `cost: ${fwdCost.toFixed(1)}`;
+
+        if (isBidirectional && hasReverse) {
+          const avgCost = (fwdCost + revCost) / 2;
+          displayCost = avgCost;
+          hoverCostLabel = fwdCost !== revCost
+            ? `avg cost: ${avgCost.toFixed(1)}`
+            : `cost: ${avgCost.toFixed(1)}`;
         }
-        
-        const label1 = `${srcAlias}:${srcPort}-${dstAlias}:${dstPort} (cost: ${fwdCost.toFixed(1)})`;
-        const label2 = `${dstAlias}:${dstPort}-${srcAlias}:${srcPort} (cost: ${revCost.toFixed(1)})`;
-        const hoverLabel = [label1, label2]
-          .sort((x, y) => x.localeCompare(y, undefined, { numeric: true }))
-          .join('\n');
+
+        const costLabel = displayCost.toFixed(1);
+        const hoverLabel = (isBidirectional && hasReverse)
+          ? `${srcAlias}:${srcPort} ⟷ ${dstAlias}:${dstPort} (${hoverCostLabel})`
+          : `${srcAlias}:${srcPort}-${dstAlias}:${dstPort} (${hoverCostLabel})`;
 
         // Stable edge id for the same physical pair, regardless of message direction order
         const edgeId = `link:${pairKey}`;
@@ -293,7 +298,7 @@
             target: l.dst_dpid,
             hoverLabel: hoverLabel,
             cost_label: costLabel,
-            cost: fwdCost
+            cost: displayCost
           },
           classes: isBidirectional ? 'undirected' : ''
         });
