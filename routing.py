@@ -71,6 +71,32 @@ def get_dqn_policy():
     return _dqn_policy
 
 
+def _reverse_hops(path: list) -> list:
+    if not path:
+        return []
+
+    hop_edges = []
+    for hop_dpid, hop_out_port in path:
+        dst = topology.get_link_destination(hop_dpid, hop_out_port)
+        if not dst:
+            raise RuntimeError("missing link destination for hop")
+        dst_dpid, _dst_port = dst
+        hop_edges.append((hop_dpid, dst_dpid))
+
+    reverse_ports = {}
+    for src_dpid, src_port, dst_dpid, _dst_port, _last_seen, _cost in topology.get_all_links():
+        reverse_ports[(src_dpid, dst_dpid)] = src_port
+
+    reversed_hops = []
+    for from_dpid, to_dpid in reversed(hop_edges):
+        out_port = reverse_ports.get((to_dpid, from_dpid))
+        if out_port is None:
+            raise RuntimeError("missing reverse link port")
+        reversed_hops.append((to_dpid, out_port))
+
+    return reversed_hops
+
+
 def select_path(src_dpid: str, dst_dpid: str, src_mac: bytes = None, dst_mac: bytes = None) -> RouteDecision:
     mode = get_mode()
 
@@ -79,6 +105,14 @@ def select_path(src_dpid: str, dst_dpid: str, src_mac: bytes = None, dst_mac: by
 
     if mode == "cost":
         return RouteDecision(topology.find_path_dijkstra(src_dpid, dst_dpid), "cost")
+
+    if mode == "dqn":
+        if src_dpid == DEST_DPID and dst_dpid == SOURCE_DPID:
+            try:
+                action, path = get_dqn_policy().select_action_path(SOURCE_DPID, DEST_DPID)
+                return RouteDecision(_reverse_hops(path), "dqn", action=action)
+            except Exception as exc:
+                return RouteDecision([], "dqn", error=f"DQN route selection failed: {exc}")
 
     if not _is_supported_dqn_flow(src_dpid, dst_dpid, src_mac, dst_mac):
         return RouteDecision(
