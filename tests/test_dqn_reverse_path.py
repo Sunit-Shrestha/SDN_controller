@@ -24,7 +24,9 @@ def test_reverse_hops_from_canonical_path(monkeypatch):
             ("C", 20, "B", 2, 0, 1.0),
         ]
 
-    monkeypatch.setattr(routing.topology, "get_link_destination", fake_get_link_destination)
+    monkeypatch.setattr(
+        routing.topology, "get_link_destination", fake_get_link_destination
+    )
     monkeypatch.setattr(routing.topology, "get_all_links", fake_get_all_links)
 
     reversed_hops = routing._reverse_hops(canonical)

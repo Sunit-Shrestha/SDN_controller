@@ -106,23 +106,18 @@ def select_path(src_dpid: str, dst_dpid: str, src_mac: bytes = None, dst_mac: by
     if mode == "cost":
         return RouteDecision(topology.find_path_dijkstra(src_dpid, dst_dpid), "cost")
 
-    if mode == "dqn":
-        if src_dpid == DEST_DPID and dst_dpid == SOURCE_DPID:
-            try:
-                action, path = get_dqn_policy().select_action_path(SOURCE_DPID, DEST_DPID)
-                return RouteDecision(_reverse_hops(path), "dqn", action=action)
-            except Exception as exc:
-                return RouteDecision([], "dqn", error=f"DQN route selection failed: {exc}")
-
-    if not _is_supported_dqn_flow(src_dpid, dst_dpid, src_mac, dst_mac):
+    if not _is_supported_dqn_flow(src_dpid, dst_dpid, src_mac, dst_mac) and not _is_supported_dqn_flow(dst_dpid, src_dpid, dst_mac, src_mac):
         return RouteDecision(
             [],
             "dqn",
             error="DQN routing only supports h1x1 -> h3x3 in the Torus(3,3) demo",
         )
 
+
     try:
-        action, path = get_dqn_policy().select_action_path(src_dpid, dst_dpid)
+        revpath = _is_supported_dqn_flow(dst_dpid, src_dpid, dst_mac, src_mac)
+        action, path = get_dqn_policy().select_action_path(SOURCE_DPID, DEST_DPID)
+        path = _reverse_hops(path) if revpath else path
         return RouteDecision(path, "dqn", action=action)
     except Exception as exc:
         return RouteDecision([], "dqn", error=f"DQN route selection failed: {exc}")

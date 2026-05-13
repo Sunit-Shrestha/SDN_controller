@@ -134,7 +134,7 @@ def get_path(src: str = Query(...), dst: str = Query(...)):
     src_ep = _resolve_node_endpoint(src, switches)
     dst_ep = _resolve_node_endpoint(dst, switches)
     if not src_ep or not dst_ep:
-        return {"found": False, "edge_ids": []}
+        return {"found": False, "edge_ids": [], "huh": False}
 
     src_sw = src_ep["switch_dpid"]
     dst_sw = dst_ep["switch_dpid"]
@@ -154,7 +154,7 @@ def get_path(src: str = Query(...), dst: str = Query(...)):
             decision = routing.select_path(src_sw, dst_sw, src_ep["mac"], dst_ep["mac"])
             flow_path = decision.path
             if not flow_path:
-                return {"found": False, "edge_ids": []}
+                return {"found": False, "edge_ids": [], "ohno": decision}
 
     edge_ids = []
     seen = set()
