@@ -129,8 +129,4 @@ def k_shortest_hop_paths(src: str, dst: str, k: int) -> list:
 def _is_supported_dqn_flow(src_dpid: str, dst_dpid: str, src_mac: bytes = None, dst_mac: bytes = None) -> bool:
     if src_dpid != SOURCE_DPID or dst_dpid != DEST_DPID:
         return False
-    if src_mac is not None and bytes(src_mac) != SOURCE_MAC:
-        return False
-    if dst_mac is not None and bytes(dst_mac) != DEST_MAC:
-        return False
     return True
