@@ -82,6 +82,7 @@
 		<button data-mode="hop">Hop</button>
 		<button data-mode="cost" class="active">Cost</button>
 		<button data-mode="dqn">DQN</button>
+		<button id="clear-flow-btn" style="margin-left: 10px; background: #FF4136; color: white; border-color: #FF4136;">Clear Flow</button>
 	</div>
 	<div id="tooltip"></div>
 	<div id="cy"></div>
@@ -233,6 +234,38 @@
 		});
 
 		loadRoutingMode();
+
+		const clearFlowBtn = document.getElementById('clear-flow-btn');
+		clearFlowBtn.addEventListener('click', async () => {
+			if (selectedNodeIds.length !== 2) {
+				alert('Please select exactly 2 nodes to clear their flow.');
+				return;
+			}
+			const srcNode = cy.getElementById(selectedNodeIds[0]);
+			const dstNode = cy.getElementById(selectedNodeIds[1]);
+			const srcMac = srcNode.data('mac');
+			const dstMac = dstNode.data('mac');
+
+			try {
+				const res = await fetch('/api/clear-flow', {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({ src_mac: srcMac, dst_mac: dstMac })
+				});
+				const data = await res.json();
+				if (data.status === 'success') {
+					if (data.cleared) {
+						console.log(`Flow cleared between ${srcMac} and ${dstMac}`);
+					} else {
+						console.log(`No active flow found between ${srcMac} and ${dstMac}`);
+					}
+					// Refresh highlights
+					requestPathHighlight();
+				}
+			} catch (err) {
+				console.error('Failed to clear flow:', err);
+			}
+		});
 
 		// Node selection state (at most 2 selected devices)
 		const selectedNodeIds = [];

@@ -245,9 +245,11 @@ def clear_flow(req: ClearFlowRequest):
     src_mac = bytes.fromhex(req.src_mac.replace(":", ""))
     dst_mac = bytes.fromhex(req.dst_mac.replace(":", ""))
     old_flow = handlers.clear_flow(src_mac, dst_mac)
+    old_flow_rev = handlers.clear_flow(dst_mac, src_mac)
     return {
         "status": "success",
         "cleared": old_flow is not None,
+        "cleared_rev": old_flow_rev is not None,
         "src_mac": req.src_mac,
         "dst_mac": req.dst_mac,
     }
