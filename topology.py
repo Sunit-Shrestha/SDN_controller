@@ -215,16 +215,19 @@ def get_link_destination(src_dpid: str, src_port: int):
         return info['dst']
 
 
-def print_topology():
-    """Pretty-print the current known topology."""
+def print_topology(verbose: bool = False):
+    """Print a minimal topology summary unless verbose output is requested."""
     all_links = get_all_links()
     if not all_links:
         print("[Topology] No links discovered yet.")
         return
+    if not verbose:
+        print(f"[Topology] Links: {len(all_links)}")
+        return
     print("[Topology] Discovered Links:")
     for src_dpid, src_port, dst_dpid, dst_port, last_seen, cost in sorted(all_links):
         print(f"  {src_dpid}:{src_port}  -->  {dst_dpid}:{dst_port}  (cost: {cost}, last_seen: {last_seen:.0f})")
-    print('Total Links:',len(all_links))
+    print("Total Links:", len(all_links))
 
 
 def get_switch_link_ports(dpid: str) -> set:

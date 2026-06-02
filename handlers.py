@@ -221,7 +221,6 @@ def _path_cost(path: list) -> float:
 
 def _lldp_sender_loop():
     stop = threading.Event()
-    prev_links = set()
     LINK_TIMEOUT = 2 * LLDP_INTERVAL
 
     while not stop.wait(LLDP_INTERVAL):
@@ -246,11 +245,7 @@ def _lldp_sender_loop():
         # Check if newer, cheaper paths are available for current flows
         _check_for_better_paths()
 
-        # Print topology if changed
-        current_links = set((l[0], l[1], l[2], l[3], l[5] if len(l)>5 else 1) for l in topology.get_all_links())
-        if current_links and (not prev_links or current_links != prev_links):
-            topology.print_topology()
-            prev_links = current_links
+        # Topology logging intentionally disabled to keep console output clean.
 
 
 def _stats_sender_loop():
@@ -264,7 +259,6 @@ def _stats_sender_loop():
 
 
 def handle_switch_connection(connection, address):
-    print(f"New connection from {address}")
     formatted_dpid = None
 
     while True:
@@ -352,8 +346,6 @@ def handle_features_reply(connection, body_data, address, switches, mac_to_port,
     # Reset learning table on every (re)connect to avoid stale host entries
     mac_to_port[formatted_dpid] = {}
 
-    print(f"Handshake Complete! Registered Switch DPID: {formatted_dpid} for {address}")
-
     utils.send_table_miss_flow(connection)
     utils.send_port_desc_request(connection, xid=2)
 
@@ -379,7 +371,6 @@ def handle_multipart_reply(body_data, formatted_dpid, connection, xid):
             port_speeds = _pending_port_speeds.pop(formatted_dpid, {})
             topology.register_ports(formatted_dpid, port_nos)
             topology.register_port_speeds(formatted_dpid, port_speeds)
-            print(f"[{formatted_dpid}] Ports discovered: {sorted(port_nos)}")
 
             dpid_int = int(formatted_dpid.replace(':', ''), 16)
             for port_no in port_nos:
